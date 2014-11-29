@@ -1,0 +1,882 @@
+#!/usr/bin/env python
+#
+# File:     pyifupdown
+# Author:   Brian Allen Vanderburg II
+# Purpose:  This script provides an ifupdown-like system for bringing network
+#           interfaces up and down.  The bulk of the actual work is performed
+#           by shell scripts in their respective hook directories.
+
+
+# Imports
+################################################################################
+
+import sys
+import os
+import re
+import stat
+import subprocess
+from collections import OrderedDict
+
+
+# Globals
+################################################################################
+
+# These will be initialized during startup
+script_dir = None
+state_file = None
+config_file = None
+
+
+# Utility classes and functions
+################################################################################
+
+class Error(Exception):
+    """ Base error class """
+    pass
+
+def message(msg):
+    """ Displace a message to stderr. """
+    sys.stderr.write(msg + '\n')
+    sys.stderr.flush()
+
+def run(command, env={}, verbose=False):
+    """ Run a command with an environment. """
+    lenv = dict()
+    lenv.update(env)
+    lenv.update({'VERBOSE': 'on' if verbose else 'off'})
+
+    if verbose:
+        message(command)
+        
+    p = subprocess.Popen(args=command, env=lenv, shell=True)
+    return p.wait()
+
+def runparts(path, env={}, verbose=False, reverse=False):
+    """ Run all files in a directory with an environment. """
+    parts = sorted(os.listdir(path))
+    if reverse:
+        parts = reversed(parts)
+    for i in parts:
+        filename = os.path.join(path, i)
+        st = os.stat(filename)
+        if st.st_mode & stat.S_IFREG and st.st_mode & stat.S_IXUSR:
+            run(filename, env, verbose)
+
+def makeenv(name, value):
+    """ Make an environment variable from a configuration name. """
+    name = name.replace('-', '_').upper()
+    if type(value) in (list,tuple):
+        value = ' '.join(value)
+
+    return (name, value)
+
+
+# Parser related code
+################################################################################
+
+class ParserLine(object):
+    """ This class represents a line from the confiugration file. """
+    def __init__(self, level, content, filename, lineno):
+        self._level = level
+        self._content = content
+        self._words = None
+        self._filename = filename
+        self._lineno = lineno
+        self._sublines = []
+
+    @property
+    def level(self):
+        return self._level
+
+    @property
+    def content(self):
+        return self._content
+
+    @property
+    def words(self):
+        if self._words is None:
+            self._words = self._parse();
+        return self._words
+
+    @property
+    def filename(self):
+        return self._filename
+
+    @property
+    def lineno(self):
+        return self._lineno
+
+    @property
+    def position(self):
+        return self._filename + ':' + str(self._lineno)
+
+    @property
+    def sublines(self):
+        return tuple(self._sublines)
+
+    def _parse(self):
+        words = []
+        word = ''
+
+        quoted = False
+        escaped = False
+        addempty = False
+        for i in self._content:
+            # Handle escape characters
+            if escaped:
+                if not i in ('\\', '\"'):
+                    raise Error('Invalid escape character: ' + self.position)
+
+                word += i
+                escaped = False
+                continue
+
+            # Add word at space
+            if not quoted and i in (' ', '\t', '\r'):
+                if len(word) > 0 or addempty:
+                    words.append(word)
+                    addempty = False
+                word = ''
+                continue
+
+            if i == '\"':
+                quoted = not quoted
+                # When quoting, allow adding empty words
+                addempty = True
+                continue
+
+            if i == '\\' and quoted:
+                escaped = True
+                continue
+
+            word += i
+
+        if len(word) > 0:
+            words.append(word)
+        
+        if escaped:
+            raise Error('Unterminated escape: ' + self.position)
+
+        if quoted:
+            raise Error('Unterminated quote: ' + self.position)
+
+        return tuple(words)
+
+
+class ParserSegment(object):
+    """ This class represents a single open configuration file. """
+    def __init__(self, filename, stack, offset=0, incfrom=None):
+        self._filename = filename
+        self._handle = None
+        self._lineno = 0
+        self._levels = []
+        self._stack = stack
+        self._offset = offset
+        self._incfrom = incfrom
+
+    def _nextline(self):
+        if self._handle is None:
+            if self._filename in self._stack:
+                raise Error("Recursive source: " + self._incfrom)
+
+            self._handle = open(self._filename, "rU")
+            self._stack.append(self._filename)
+
+        result = self._handle.readline()
+        if len(result) == 0:
+            return False
+
+        self._lineno += 1
+        if result[-1:] == '\n':
+            result = result[:-1]
+
+        return result
+        
+    def _calcline(self, line, lineno):
+        pos = 0
+        for i in line:
+            if i == ' ':
+                pos += 1
+            elif i == '\t':
+                pos = pos + 8 - (pos % 8)
+            else:
+                break
+
+        if len(self._levels) == 0:
+            # The first data line defines the level 0 indentation
+            self._levels.append(pos)
+        elif pos > self._levels[-1]:
+            self._levels.append(pos)
+        elif pos in self._levels:
+            index = self._levels.index(pos)
+            self._levels = self._levels[:index + 1]
+        else:
+            raise Error("Invalid indentation: " + self._filename + ":" + str(lineno))
+
+        return ParserLine(len(self._levels) + self._offset - 1, line.strip(), self._filename, lineno)
+
+    def readline(self):
+        while True:
+            # Read each line of multi-line, remember first line number
+            line = ''
+            part = self._nextline()
+            lineno = self._lineno
+
+            while not part is False:
+                if part[-1:] == '\\':
+                    if len(line) > 0:
+                        line += ' '
+
+                    line += part[:-1]
+                    part = self._nextline()
+                else:
+                    line += part
+                    break
+
+            # If empty line and end of file
+            if len(line) == 0 and part is False:
+                return False
+
+            # If blank line
+            if len(line.strip()) == 0:
+                continue
+
+            # If a comment
+            if line.strip()[0:1] == '#':
+                continue
+
+            # Otherwise, handle it and return
+            return self._calcline(line, lineno)
+
+    def close(self):
+        if not self._handle is None:
+            self._handle.close()
+            self._stack.remove(self._filename)
+
+
+class Parser(object):
+    """ This class opens the configuration file and handles includes and conditinals. """
+    def __init__(self, filename):
+        self._stack = [] # Used to avoid recursion
+        self._unread = []
+        self._segments = []
+        self._segments.append(ParserSegment(filename, self._stack))
+        self._defines = {}
+        self._condstatus = []
+
+    def __enter__(self):
+        return self
+
+    def __leave__(self, type, value, traceback):
+        self.close()
+
+    def __iter__(self):
+        line = self.readline()
+        while not line is False:
+            yield line
+            line = self.readline()
+
+    def close():
+        for i in self._segments:
+            i.close()
+        self._segments = []
+
+    def readline(self):
+        # Check our unread first
+        if len(self._unread) > 0:
+            return self._unread.pop()
+
+        while True:
+            # While file are we reading from
+            if len(self._segments) == 0:
+                return False
+
+            segment = self._segments[-1]
+            line = segment.readline()
+
+            # If nothing was read, close the current segment
+            if line is False:
+                segment.close()
+                self._segments.pop()
+                continue
+
+            # Keep only condition levels less than line level
+            self._condstatus = filter(lambda i: i[0] < line.level, self._condstatus)
+            
+            # Handle two-part special items
+            words = line.words
+
+            # If we are in a condition that is false, skip the lines
+            if len(self._condstatus) > 0 and self._condstatus[-1][1] == False:
+                continue
+            
+            # If it is a condition, test it
+            if len(words) > 0 and words[0] in ('ifdef', 'ifndef', 'undef'):
+                if len(words) > 1:
+                    self.checkIdent(words[1], line.position)
+
+                    if words[0] == 'ifdef':
+                        self._condstatus.append((line.level, words[1] in self._defines))
+                    elif words[0] == 'ifndef':
+                        self._condlines.append(line)
+                        self._condstatus.append((line.level, not words[1] in self._defines))
+                    elif words[0] == 'undef':
+                        self._defines.pop(words[1], None)
+
+                    continue
+                else:
+                    raise Error('Expected identifier: ' + line.position)
+
+            # If it is an inclusion, open new file or directory
+            if len(words) > 0 and words[0] == 'include':
+                if len(words) > 1:
+                    filename = os.path.join(os.path.dirname(line.filename), words[1].replace('/', os.sep))
+
+                    if os.path.isfile(filename):
+                        self._segments.append(ParserSegment(filename, self._stack, line.level, line.position))
+                    elif os.path.isdir(filename):
+                        for i in reversed(sorted(os.listdir(filename))):
+                            if i[:1] == '.' or i[-1:] == '~':
+                                continue
+
+                            subname = os.path.join(filename, i)
+                            if os.path.isfile(subname):
+                                self._segments.append(ParserSegment(subname, self._stack, line.level, line.position))
+                    else:
+                        raise Error("Referenced file not found: " + line.position)
+
+                    continue
+                else:
+                    raise Error("No filename specified: " + line.position)
+
+            # If it is a define
+            if len(words) > 0 and words[0] == 'define':
+                if len(words) > 1:
+                    self.checkIdent(words[1], line.position)
+
+                    if len(words) > 2:
+                        self._defines[words[1]] = words[2]
+                    else:
+                        self._defines[words[1]] = '1'
+
+                    continue
+                else:
+                    raise Error('Expected identifier: ' + line.position)
+
+            # If anything else, it is a line to return
+            self.fix(line)
+            return line
+
+    def unread(self, line):
+        self._unread.append(line)
+
+    def checkIdent(self, ident, position):
+        if not re.match('^[A-Za-z][A-Za-z0-9_\\.]*$', ident):
+            raise Error('Invalid identifier: ' + position)
+
+    def fix(self, line):
+        def subfn(mo):
+            key = mo.group(1)
+            if len(key) == 0:
+                return '%'
+            elif key in self._defines:
+                return self._defines[key]
+            else:
+                raise Error('Unknown value "' + key + '": ' + line.position)
+
+        line._content = re.sub('%(.*?)%', subfn, line.content)
+        line._words = None # Since we are changing the content of this line, force recalculation of words
+        line._level = line._level - len(self._condstatus)
+
+    def read(self):
+        """ Read all lines and then build the sublines lists """
+        top = []
+        state = [top]
+
+        line = self.readline()
+        while not line is False:
+            if line.level == len(state):
+                state.append(state[-1][-1]._sublines)
+            elif line.level < len(state) - 1:
+                state = state[:line.level + 1]
+            elif line.level > len(state):
+                raise Error('Unknown parse error')
+
+            state[-1].append(line)
+            line = self.readline()
+
+        return top
+
+
+# State management
+################################################################################
+
+class State(object):
+    """ This object represents the current state of the devices. """
+
+    def __init__(self, filename):
+        """ Load the current state """
+        self.filename = filename
+        self.state = {}
+
+        if os.path.isfile(filename):
+            with open(filename, 'rU') as handle:
+                for line in handle:
+                    parts = line.split('=')
+                    if parts = 2:
+                        self.state[parts[0]] = parts[1]
+
+    def save(self):
+        """ Save the state file. """
+        dirname = os.path.dirname(self.filename)
+        if not os.path.isdir(dirname):
+            os.makedirs(os.path.dirname)
+        with open(self.filename, 'wt') as handle:
+            for i in self.state:
+                handle.write('{0}={1}\n'.format(i, self.state[i]))
+
+    def append(self, device, alias):
+        self.state[device] = alias
+
+    def remove(self, device):
+        self.state.pop(device, None)
+
+
+# Configuration file objects
+################################################################################
+
+class IUpDown(object):
+    """ Base class for objects that can be brought up and down. """
+    def up(self, processor, name, verbose=False):
+        raise NotImplementedError
+
+    def down(self, processor, name, verbose=False):
+        raise NotImplementedError
+
+
+class Iface(IUpDown):
+    """ A class that represents the interface. """
+
+    def __init__(self, line):
+        """ Load the interface information. """
+        self.preup = []
+        self.up = []
+        self.postup = []
+        self.predown = []
+        self.down = []
+        self.postdown = []
+
+        self.iface_env = None
+        self.protos_env = []
+
+        words = line.words
+
+        # Read name 
+        if len(words) > 1:
+            self.name = words[1]
+        else:
+            raise Error('Expected name: ' + line.position)
+
+        # Read other stuff
+        for i in line.sublines:
+            words = i.words
+
+            if words[0] == 'type':
+                if self.object_env:
+                    raise Error('Only one type can be specified per interface: ' + i.position)
+                self.iface_env = self.readType(i)
+
+            elif words[0] == 'proto':
+                self.protos_env.append(self.readProto(i))
+
+            elif words[0] == 'pre-up':
+                for j in i.sublines:
+                    self.preup.append(j.content)
+
+            elif words[0] == 'up':
+                for j in i.sublines:
+                    self.up.append(j.content)
+
+            elif words[0] == 'post-up':
+                for j in i.sublines:
+                    self.postup.append(j.content)
+
+            elif words[0] == 'pre-down':
+                for j in i.sublines:
+                    self.predown.append(j.content)
+
+            elif words[0] == 'down':
+                for j in i.sublines:
+                    self.down.append(j.content)
+
+            elif words[0] == 'post-down':
+                for j in i.sublines:
+                    self.postdown.append(j.content)
+
+            else:
+                raise Error('Unexpected line: ' + i.position)
+
+        # Update type name and directories
+        path = script_dir
+        if self.iface_env:
+            parts = self.iface_env['IFACE_TYPE'].split('/')
+            if len(parts) > 1:
+                self.iface_env['IFACE_TYPE'] = parts[-1]
+                path = os.path.join(script_dir, *parts[0:-1])
+        
+        self.iface_dir = os.path.join(path, "iface.d")
+        self.proto_dir = os.path.join(path, "proto.d")
+
+    def readType(self, line):
+        """ Read type information """
+        words = line.words
+
+        # Read type name
+        if len(words) > 1:
+            type = words[1]
+        else:
+            raise Error('Expected type name: ' + line.position)
+
+        # Read options
+        opts = {}
+        for i in line.sublines:
+            words = i.words
+            if len(words) > 1:
+                opts[words[0]] = words[1:]
+            else:
+                raise Error('Exception option and value: ' + i.position)
+
+        opts['TYPE'] = type
+
+        # Build env
+        env = {}
+        for i in opts:
+            (name, value) = makeenv(i, opts[i])
+            env['IFACE_' + name] = value
+
+        return env
+
+    def readProto(self, line):
+        """ Load the information. """
+        words = line.words
+
+        # Read section type and parameters
+        if len(words) > 2:
+            type = words[1]
+            method = words[2]
+        else:
+            raise Error('Expected protocol and method: ' + line.position)
+
+        # Read options
+        opts = {}
+        for i in line.sublines:
+            words = i.words
+            if len(words) > 1:
+                opts[words[0]] = words[1:]
+            else:
+                raise Error('Exception option and value: ' + i.position)
+        
+        opts['TYPE'] = type
+        opts['METHOD'] = method
+
+        # Build env
+        env = {}
+        for i in opts:
+            (name, value) = makeenv(i, self.opts[i])
+            env['PROTO_' + name] = value
+
+        return env
+
+    def up(self, processor, iface, verbose=False):
+        """ Bring an object up. """
+        env = {'IFACE': iface,
+               'LOGICAL': self.name,
+               'MODE': 'start',
+               'PHASE': '',
+               'PATH': os.environ['PATH']}
+
+        message('Configuring interface {0}={1}'.format(iface, self.name))
+
+        # Determine directories
+        iface_dir = self.iface_dir
+        proto_dir = self.proto_dir
+
+        # pre-up
+        env['PHASE'] = 'pre-up'
+
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
+        if self.protos_env:
+            runparts(proto_dir, env, verbose)
+        for i in self.preup:
+            run(i, env, verbose)
+
+        # up
+        env['PHASE'] = 'up'
+
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
+
+        for i in self.protos_env:
+            runparts(proto_dir, dict(env.items() + i.items()), verbose)
+
+        for i in self.up:
+            run(i, env, verbose)
+
+        # post-up
+        env['PHASE'] = 'post-up'
+        
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
+        if self.protos_env:
+            runparts(proto_dir, env, verbose)
+        for i in self.postup:
+            run(i, env, verbose)
+    
+    def down(self, processor, iface, verbose=False):
+        """ Bring an interface down. """
+        env = {'IFACE': iface,
+               'LOGICAL': self.name,
+               'MODE': 'stop',
+               'PHASE': '',
+               'PATH': os.environ['PATH']}
+
+        message('Configuring interface {0}={1}'.format(iface, self.name))
+        
+        # Determine directories
+        iface_dir = self.iface_dir
+        proto_dir = self.proto_dir
+
+        # pre-down
+        env['PHASE'] = 'pre-down'
+
+        for i in self.predown:
+            run(i, env, verbose)
+        if self.protos_env:
+            runparts(proto_dir, env, verbose, True)
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+
+        # down
+        env['PHASE'] = 'down'
+
+        for i in self.down:
+            run(i, env, verbose)
+        
+        for i in self.protos_env:
+            runparts(proto_dir, dict(env.items() + i.items()), verbose, True)
+
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+
+        # post-down
+        env['PHASE'] = 'post-down'
+        
+        for i in self.postdown:
+            run(i, env, verbose)
+        if self.protos_env:
+            runparts(proto_dir, env, verbose, True)
+        if self.iface_env:
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+
+
+class Group(IUpDown):
+    """ A class that represents a group of interfaces. """
+
+    def __init__(self, line):
+        """ Load the group information. """
+        self.preup = []
+        self.postup = []
+        self.predown = []
+        self.postdown = []
+
+        words = line.words
+
+        # Read name and dependenices
+        if len(words) > 1:
+            self.name = words[1]
+            if len(words) > 2:
+                self.dependencies = words[2:]
+            else:
+                self.dependencies = []
+        else:
+            raise Error('Expected name and optional dependencies: ' + line.position)
+
+        # Read other stuff
+        for i in line.sublines:
+            words = i.words
+
+            if words[0] == 'pre-up':
+                for j in i.sublines:
+                    self.preup.append(j.content)
+
+            elif words[0] == 'post-up':
+                for j in i.sublines:
+                    self.postup.append(j.content)
+
+            elif words[0] == 'pre-down':
+                for j in i.sublines:
+                    self.predown.append(j.content)
+
+            elif words[0] == 'post-down':
+                for j in i.sublines:
+                    self.postdown.append(j.content)
+
+            else:
+                raise Error('Unexpected line: ' + i.position)
+
+
+    def up(self, processor, group, verbose=False):
+        """ Bring a group up. """
+        env = {'GROUP': iface,
+               'LOGICAL': self.name,
+               'MODE': 'start',
+               'PHASE': '',
+               'PATH': os.environ['PATH']}
+
+        message('Configuring group {0}={1}'.format(group, self.name))
+
+        # pre-up
+        env['PHASE'] = 'pre-up'
+        for i in self.preup:
+            run(i, env, verbose)
+
+        # up
+        for i in self.dependencies:
+            processor.up(i)
+
+        # post-up
+        env['PHASE'] = 'post-up'
+        for i in self.postup:
+            run(i, env, verbose)
+    
+    def down(self, processor, group, verbose=False):
+        """ Bring an group down. """
+        env = {'GROUP': obj,
+               'LOGICAL': self.name,
+               'MODE': 'stop',
+               'PHASE': '',
+               'PATH': os.environ['PATH']}
+
+        message('Configuring group {0}={1}'.format(obj, self.name))
+        
+        # pre-down
+        env['PHASE'] = 'pre-down'
+        for i in self.predown:
+            run(i, env, verbose)
+
+        # down
+        for i in reversed(self.dependencies):
+            processor.down(i)
+
+        # post-down
+        env['PHASE'] = 'post-down'
+        for i in self.postdown:
+            run(i, env, verbose)
+
+
+class Mapping(object):
+    """ A mapping object. """
+    def __init__(self, line):
+        """ Read the mapping information """
+        pass
+
+    def resolve(self):
+        """ Resolve the mapping to the logical interface. """
+        pass
+
+
+class Config(object):
+    """ A class for the configuration file. """
+
+    def __init__(self, filename):
+        """ Read the configuration file. """
+        self.updowns = OrderedDict()
+        self.mappings = {}
+        self.allows = {}
+
+        p = Parser(filename)
+        lines = p.read()
+
+        for i in lines:
+            words = i.words
+
+            if words[0] == 'allow':
+                if len(words) > 2:
+                    if not words[1] in self.allows:
+                        self.allows[words[1]] = []
+                    if not words[2] in self.allows[words[1]]:
+                        self.allows[words[1]].append(words[2])
+                else:
+                    raise Error('Expected name and object: ' + i.position)
+
+            elif words[0] == 'iface' or words[0] == 'interface':
+                iface = Iface(i)
+                if iface.name in self.updowns:
+                    raise Error('Interface or group name already specified: ' + i.position)
+                else:
+                    self.updowns[iface.name] = iface
+
+            elif words[0] == 'group':
+                group = Group(i)
+                if group.name in self.updowns:
+                    raise Error('Interface or group name already specified: ' + i.position)
+                else:
+                    self.updowns[group.name] = group
+
+            elif words[0] == 'mapping':
+                mapping = Mapping(i)
+                if mapping.name in self.mappings:
+                    raise Error('Mapping name already specified: ' + i.position)
+                else:
+                    self.mappings[i] = mapping
+
+            else:
+                raise Error('Unexpected line: ' + i.position)
+
+
+# Processor to manage things.
+################################################################################
+
+class Processor(object):
+    """ The processor object. """
+
+    def __init__(self):
+        """ Load the current config and state. """
+        self.config = Config(paths.config_file)
+        self.state = State(paths.state_file)
+
+    def find(self, name):
+        """ Apply mappings if needed to find the name and logical. """
+        parts = name.split('=')
+        if len(parts) == 2:
+            return (parts[0], parts[1])
+
+        if parts[0] in self.config.mappings:
+            return (parts[0], self.config.mappings[part[0]].resolve())
+
+        return (parts[0], parts[0])
+
+    def up(self, name):
+        """ Bring up an interface/group """
+        (name, logical) = self.find(name)
+        pass
+
+    def down(self, name):
+        """ Bring down an interface/group. """
+        pass
+
+    def cmdup(self, names, allows):
+        """ Bring up interfaces/groups from the command line. """
+        pass
+    
+    def cmddown(self, names, allows):
+        """ Bring down interfaces/groups from the command line. """
+        pass
+
+
+# Main program entry
+################################################################################
+
+
+
