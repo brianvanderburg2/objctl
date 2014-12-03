@@ -15,17 +15,17 @@ import os
 import re
 import stat
 import subprocess
+import argparse
 from collections import OrderedDict
 
 
 # Globals
 ################################################################################
 
-# These will be initialized during startup
-script_dir = None
-state_file = None
-config_file = None
-
+script_dir = "/etc/pynetwork/script"
+state_file = "/etc/pynetwork/run/state"
+config_file = "/etc/pynetwork/interfaces"
+cmdline = None
 
 # Utility classes and functions
 ################################################################################
@@ -39,20 +39,19 @@ def message(msg):
     sys.stderr.write(msg + '\n')
     sys.stderr.flush()
 
-def run(command, env={}, verbose=False):
+def run(command, env={}, show=None):
     """ Run a command with an environment. """
-    lenv = dict()
-    lenv.update(env)
-    lenv.update({'VERBOSE': 'on' if verbose else 'off'})
-
-    if verbose:
-        message(command)
+    if cmdline.verbose:
+        message(show if show else command)
+    if cmdline.dumpenv:
+        message(str(env))
         
-    p = subprocess.Popen(args=command, env=lenv, shell=True)
+    p = subprocess.Popen(args=command, env=env, shell=True)
     return p.wait()
 
-def runparts(path, env={}, verbose=False, reverse=False):
+def runparts(path, env={}, reverse=False):
     """ Run all files in a directory with an environment. """
+    basename = os.path.basename(path)
     parts = sorted(os.listdir(path))
     if reverse:
         parts = reversed(parts)
@@ -60,7 +59,7 @@ def runparts(path, env={}, verbose=False, reverse=False):
         filename = os.path.join(path, i)
         st = os.stat(filename)
         if st.st_mode & stat.S_IFREG and st.st_mode & stat.S_IXUSR:
-            run(filename, env, verbose)
+            run(filename, env, os.path.join(basename, i))
 
 def makeenv(name, value):
     """ Make an environment variable from a configuration name. """
@@ -422,9 +421,9 @@ class State(object):
         if os.path.isfile(filename):
             with open(filename, 'rU') as handle:
                 for line in handle:
-                    parts = line.split('=')
-                    if parts = 2:
-                        self.state[parts[0]] = parts[1]
+                    parts = line.strip().split('=')
+                    if len(parts) == 2:
+                        self.state[parts[0].strip()] = parts[1].strip()
 
     def save(self):
         """ Save the state file. """
@@ -441,16 +440,19 @@ class State(object):
     def remove(self, device):
         self.state.pop(device, None)
 
+    def get(self, device):
+        return self.state.get(device, None)
+
 
 # Configuration file objects
 ################################################################################
 
 class IUpDown(object):
     """ Base class for objects that can be brought up and down. """
-    def up(self, processor, name, verbose=False):
+    def putup(self, processor, name, verbose=False):
         raise NotImplementedError
 
-    def down(self, processor, name, verbose=False):
+    def putdown(self, processor, name, verbose=False):
         raise NotImplementedError
 
 
@@ -468,6 +470,7 @@ class Iface(IUpDown):
 
         self.iface_env = None
         self.protos_env = []
+        self.proto_types_env = []
 
         words = line.words
 
@@ -482,12 +485,12 @@ class Iface(IUpDown):
             words = i.words
 
             if words[0] == 'type':
-                if self.object_env:
+                if self.iface_env:
                     raise Error('Only one type can be specified per interface: ' + i.position)
-                self.iface_env = self.readType(i)
+                self.readType(i)
 
             elif words[0] == 'proto':
-                self.protos_env.append(self.readProto(i))
+                self.readProto(i)
 
             elif words[0] == 'pre-up':
                 for j in i.sublines:
@@ -516,16 +519,8 @@ class Iface(IUpDown):
             else:
                 raise Error('Unexpected line: ' + i.position)
 
-        # Update type name and directories
-        path = script_dir
-        if self.iface_env:
-            parts = self.iface_env['IFACE_TYPE'].split('/')
-            if len(parts) > 1:
-                self.iface_env['IFACE_TYPE'] = parts[-1]
-                path = os.path.join(script_dir, *parts[0:-1])
-        
-        self.iface_dir = os.path.join(path, "iface.d")
-        self.proto_dir = os.path.join(path, "proto.d")
+        # Enumerate protocol types
+        self.buildProtoTypesEnv()
 
     def readType(self, line):
         """ Read type information """
@@ -554,7 +549,7 @@ class Iface(IUpDown):
             (name, value) = makeenv(i, opts[i])
             env['IFACE_' + name] = value
 
-        return env
+        self.iface_env = env
 
     def readProto(self, line):
         """ Load the information. """
@@ -582,102 +577,142 @@ class Iface(IUpDown):
         # Build env
         env = {}
         for i in opts:
-            (name, value) = makeenv(i, self.opts[i])
+            (name, value) = makeenv(i, opts[i])
             env['PROTO_' + name] = value
 
-        return env
+        self.protos_env.append(env)
+    
+    def buildProtoTypesEnv(self):
+        """ Build the list of protoco; types on this interface """
+        handled = []
+        self.proto_types_env = []
 
-    def up(self, processor, iface, verbose=False):
+        for i in self.protos_env:
+            proto = i['PROTO_TYPE']
+            if not proto in handled:
+                handled.append(proto)
+                (name, value) = makeenv('TYPE', proto)
+                self.proto_types_env.append({'PROTO_' + name: value})
+
+    def putup(self, processor, iface):
         """ Bring an object up. """
         env = {'IFACE': iface,
                'LOGICAL': self.name,
                'MODE': 'start',
                'PHASE': '',
-               'PATH': os.environ['PATH']}
+               'PATH': os.environ['PATH'],
+               'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('Configuring interface {0}={1}'.format(iface, self.name))
+        message('configuring interface {0}={1}'.format(iface, self.name))
 
         # Determine directories
-        iface_dir = self.iface_dir
-        proto_dir = self.proto_dir
+        iface_dir = os.path.join(script_dir, 'iface.d')
+        proto_dir = os.path.join(script_dir, 'proto.d')
 
         # pre-up
+        if cmdline.verbose:
+            message('pre-up')
+
         env['PHASE'] = 'pre-up'
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
-        if self.protos_env:
-            runparts(proto_dir, env, verbose)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
+        
+        for i in self.proto_types_env:
+            runparts(proto_dir, dict(env.items() + i.items()))
+
         for i in self.preup:
-            run(i, env, verbose)
+            run(i, env)
 
         # up
+        if cmdline.verbose:
+            message('up')
+
         env['PHASE'] = 'up'
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
 
         for i in self.protos_env:
-            runparts(proto_dir, dict(env.items() + i.items()), verbose)
+            runparts(proto_dir, dict(env.items() + i.items()))
 
         for i in self.up:
-            run(i, env, verbose)
+            run(i, env)
 
         # post-up
+        if cmdline.verbose:
+            message('post-up')
+
         env['PHASE'] = 'post-up'
         
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose)
-        if self.protos_env:
-            runparts(proto_dir, env, verbose)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
+        
+        for i in self.proto_types_env:
+            runparts(proto_dir, dict(env.items() + i.items()))
+
         for i in self.postup:
-            run(i, env, verbose)
+            run(i, env)
     
-    def down(self, processor, iface, verbose=False):
+    def putdown(self, processor, iface):
         """ Bring an interface down. """
         env = {'IFACE': iface,
                'LOGICAL': self.name,
                'MODE': 'stop',
                'PHASE': '',
-               'PATH': os.environ['PATH']}
+               'PATH': os.environ['PATH'],
+               'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('Configuring interface {0}={1}'.format(iface, self.name))
+        message('configuring interface {0}={1}'.format(iface, self.name))
         
         # Determine directories
-        iface_dir = self.iface_dir
-        proto_dir = self.proto_dir
+        iface_dir = os.path.join(script_dir, 'iface.d')
+        proto_dir = os.path.join(script_dir, 'proto.d')
 
         # pre-down
+        if cmdline.verbose:
+            message('pre-down')
+
         env['PHASE'] = 'pre-down'
 
         for i in self.predown:
-            run(i, env, verbose)
-        if self.protos_env:
-            runparts(proto_dir, env, verbose, True)
+            run(i, env)
+        
+        for i in self.proto_types_env:
+            runparts(proto_dir, dict(env.items() + i.items()))
+
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
 
         # down
+        if cmdline.verbose:
+            message('down')
+
         env['PHASE'] = 'down'
 
         for i in self.down:
-            run(i, env, verbose)
+            run(i, env)
         
         for i in self.protos_env:
-            runparts(proto_dir, dict(env.items() + i.items()), verbose, True)
+            runparts(proto_dir, dict(env.items() + i.items()), True)
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
 
         # post-down
+        if cmdline.verbose:
+            message('post-down')
+
         env['PHASE'] = 'post-down'
         
         for i in self.postdown:
-            run(i, env, verbose)
-        if self.protos_env:
-            runparts(proto_dir, env, verbose, True)
+            run(i, env)
+        
+        for i in self.proto_types_env:
+            runparts(proto_dir, dict(env.items() + i.items()))
+
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), verbose, True)
+            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
 
 
 class Group(IUpDown):
@@ -726,15 +761,16 @@ class Group(IUpDown):
                 raise Error('Unexpected line: ' + i.position)
 
 
-    def up(self, processor, group, verbose=False):
+    def putup(self, processor, group):
         """ Bring a group up. """
         env = {'GROUP': iface,
                'LOGICAL': self.name,
                'MODE': 'start',
                'PHASE': '',
-               'PATH': os.environ['PATH']}
+               'PATH': os.environ['PATH'],
+               'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('Configuring group {0}={1}'.format(group, self.name))
+        message('configuring group {0}={1}'.format(group, self.name))
 
         # pre-up
         env['PHASE'] = 'pre-up'
@@ -743,36 +779,37 @@ class Group(IUpDown):
 
         # up
         for i in self.dependencies:
-            processor.up(i)
+            processor.putup(i)
 
         # post-up
         env['PHASE'] = 'post-up'
         for i in self.postup:
             run(i, env, verbose)
     
-    def down(self, processor, group, verbose=False):
+    def putdown(self, processor, group):
         """ Bring an group down. """
         env = {'GROUP': obj,
                'LOGICAL': self.name,
                'MODE': 'stop',
                'PHASE': '',
-               'PATH': os.environ['PATH']}
+               'PATH': os.environ['PATH'],
+               'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('Configuring group {0}={1}'.format(obj, self.name))
+        message('configuring group {0}={1}'.format(obj, self.name))
         
         # pre-down
         env['PHASE'] = 'pre-down'
         for i in self.predown:
-            run(i, env, verbose)
+            run(i, env)
 
         # down
         for i in reversed(self.dependencies):
-            processor.down(i)
+            processor.putdown(i)
 
         # post-down
         env['PHASE'] = 'post-down'
         for i in self.postdown:
-            run(i, env, verbose)
+            run(i, env)
 
 
 class Mapping(object):
@@ -843,8 +880,8 @@ class Processor(object):
 
     def __init__(self):
         """ Load the current config and state. """
-        self.config = Config(paths.config_file)
-        self.state = State(paths.state_file)
+        self.config = Config(config_file)
+        self.state = State(state_file)
 
     def find(self, name):
         """ Apply mappings if needed to find the name and logical. """
@@ -857,26 +894,108 @@ class Processor(object):
 
         return (parts[0], parts[0])
 
-    def up(self, name):
+    def allowed(self, names, allow):
+        if allow:
+            # An allow has been specified, so update names as needed
+            if allow in self.config.allows:
+                if len(names) == 0:
+                    return list(self.config.allows[allow])
+                else:
+                    return [i for i in names if i in self.config.allows[allow]]
+            else:
+                message('allow {} not found'.format(allow))
+                return []
+        else:
+            return names
+
+    def putup(self, name):
         """ Bring up an interface/group """
+        # Check if already up
+        if not self.state.get(name) is None:
+            message('interface/group {0} already configured'.format(name))
+            return
+        
+        # Check if mapping is found
         (name, logical) = self.find(name)
-        pass
+        if logical is None:
+            message('interface/group {0} mapping unresolved'.format(name))
+            return
 
-    def down(self, name):
+        # Check that definition exists
+        if not logical in self.config.updowns:
+            message('interface/group {0} unknown'.format(name))
+            return
+
+        # Put it up
+        self.config.updowns[logical].putup(self, name)
+        self.state.append(name, logical)
+
+    def putdown(self, name):
         """ Bring down an interface/group. """
-        pass
+        # Make sure it is already up
+        logical = self.state.get(name)
+        if logical is None:
+            message('interface/group {0} not configured'.format(name))
+            return
 
-    def cmdup(self, names, allows):
+        # Check that definition exists
+        if not logical in self.config.updowns:
+            message('interface/group {0} unknown'.format(name))
+            return
+
+        # Put it down
+        self.config.updowns[logical].putdown(self, name)
+        self.state.remove(name)
+
+    def cmdup(self, names, allow):
         """ Bring up interfaces/groups from the command line. """
-        pass
+        names = self.allowed(names, allow)
+        for i in names:
+            self.putup(i)
     
-    def cmddown(self, names, allows):
+    def cmddown(self, names, allow):
         """ Bring down interfaces/groups from the command line. """
-        pass
+        names = self.allowed(names, allow)
+        for i in names:
+            self.putdown(i)
+
+    def save(self):
+        """ Save information before quitting. """
+        self.state.save()
 
 
 # Main program entry
 ################################################################################
 
+# Parse the command line
+parser = argparse.ArgumentParser(description='Simple python network interface control script')
+parser.add_argument('-a', dest='allow', action='store', required=False, help='Allow only interfaces and groups that match to be affected.')
+parser.add_argument('-v', dest='verbose', action='store_true', required=False, default=False, help='Show verbose details.')
+parser.add_argument('-e', dest='dumpenv', action='store_true', required=False, default=False, help='Dump environment variables for each executed command.')
+group = parser.add_argument_group('group')
+group.add_argument('-s', dest='state_file', action='store', default=state_file, help='Specify a different state file.')
+group.add_argument('-c', dest='config_file', action='store', default=config_file, help='Specify a different configuration file.')
+group.add_argument('-d', dest='script_dir', action='store', default=script_dir, help='Specify a different hook script directory.')
 
+parser.add_argument('action', action='store', choices=['up', 'down', 'list', 'query'], help='Action to perform with specified interfaces and groups.')
+parser.add_argument('targets', action='store', nargs='*', help='Interfaces and groups to affect')
+
+cmdline = parser.parse_args()
+
+# Update the globals
+script_dir = os.path.abspath(cmdline.script_dir)
+state_file = os.path.abspath(cmdline.state_file)
+config_file = os.path.abspath(cmdline.config_file)
+
+# Create the processor and execute the actions
+proc = Processor()
+if cmdline.action == 'up':
+    proc.cmdup(cmdline.targets, cmdline.allow)
+elif cmdline.action == 'down':
+    proc.cmddown(cmdline.targets, cmdline.allow)
+else:
+    print("Error: action '" + cmdline.action + "' not implemented.")
+    sys.exit(-1)
+
+proc.save()
 

@@ -1,0 +1,15 @@
+#/bin/sh
+
+# In the 'up' phase, assign certain information
+if [ "$PHASE" = "up" ] ; then
+    
+    if [ "$TYPE" = "nic" ] ; then
+        ip link set dev $DEVICE up
+    fi
+fi
+
+# In the down phase, take down the interface
+if [ "$PHASE" = "down" ] && [ "$TYPE" = "nic" ] ; then
+    ip link set dev $DEVICE down
+fi
+
