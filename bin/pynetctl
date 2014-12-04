@@ -52,9 +52,7 @@ def run(command, env={}, show=None):
 def runparts(path, env={}, reverse=False):
     """ Run all files in a directory with an environment. """
     basename = os.path.basename(path)
-    parts = sorted(os.listdir(path))
-    if reverse:
-        parts = reversed(parts)
+    parts = sorted(os.listdir(path), reverse=reverse)
     for i in parts:
         filename = os.path.join(path, i)
         st = os.stat(filename)
@@ -678,8 +676,8 @@ class Iface(IUpDown):
         for i in self.predown:
             run(i, env)
         
-        for i in self.proto_types_env:
-            runparts(proto_dir, dict(env.items() + i.items()))
+        for i in reversed(self.proto_types_env):
+            runparts(proto_dir, dict(env.items() + i.items()), True)
 
         if self.iface_env:
             runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
@@ -693,7 +691,7 @@ class Iface(IUpDown):
         for i in self.down:
             run(i, env)
         
-        for i in self.protos_env:
+        for i in reversed(self.protos_env):
             runparts(proto_dir, dict(env.items() + i.items()), True)
 
         if self.iface_env:
@@ -708,8 +706,8 @@ class Iface(IUpDown):
         for i in self.postdown:
             run(i, env)
         
-        for i in self.proto_types_env:
-            runparts(proto_dir, dict(env.items() + i.items()))
+        for i in reversed(self.proto_types_env):
+            runparts(proto_dir, dict(env.items() + i.items()), True)
 
         if self.iface_env:
             runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
@@ -763,7 +761,7 @@ class Group(IUpDown):
 
     def putup(self, processor, group):
         """ Bring a group up. """
-        env = {'GROUP': iface,
+        env = {'GROUP': group,
                'LOGICAL': self.name,
                'MODE': 'start',
                'PHASE': '',
@@ -775,7 +773,7 @@ class Group(IUpDown):
         # pre-up
         env['PHASE'] = 'pre-up'
         for i in self.preup:
-            run(i, env, verbose)
+            run(i, env)
 
         # up
         for i in self.dependencies:
@@ -784,18 +782,18 @@ class Group(IUpDown):
         # post-up
         env['PHASE'] = 'post-up'
         for i in self.postup:
-            run(i, env, verbose)
+            run(i, env)
     
     def putdown(self, processor, group):
         """ Bring an group down. """
-        env = {'GROUP': obj,
+        env = {'GROUP': group,
                'LOGICAL': self.name,
                'MODE': 'stop',
                'PHASE': '',
                'PATH': os.environ['PATH'],
                'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('configuring group {0}={1}'.format(obj, self.name))
+        message('configuring group {0}={1}'.format(group, self.name))
         
         # pre-down
         env['PHASE'] = 'pre-down'

@@ -1,0 +1,51 @@
+#!/bin/sh
+
+# This nic script does not create/destroy any devices but only brings them
+# up and and down.  It can also assign certain information to the NIC:
+#
+#   NIC_HWADDR      - Set the hardware address
+#   NIC_MTU         - Set the mtu
+#   NIC_PROMISC     - Enable or disable promisc mode
+#   NIC_NETNS       - Set net namespace
+#
+
+run()
+{
+    [ "$VERBOSE" = "0" ] || echo $@
+    $@
+}
+
+# In the 'up' phase, assign certain information
+if [ "$PHASE" = "up" -a -d "/sys/class/net/$IFACE" ] ; then
+
+    # hwaddr
+    if [ x"$IFACE_NIC_HWADDR" != x"" ] ; then
+        run ip link set dev $IFACE address $IFACE_NIC_HWADDR
+    fi
+
+    # mtu
+    if [ x"$IFACE_NIC_MTU" != x"" ] ; then
+        run ip link set dev $IFACE mtu $IFACE_NIC_MTU
+    fi
+
+    # promisc
+    if [ x"$IFACE_NIC_PROMISC" = x"on" ] ; then
+        run ip link set dev $IFACE promisc on
+    else
+        run ip link set dev $IFACE promisc off
+    fi
+
+    # netns
+    if [ x"$IFACE_NIC_NETNS" != x"" ] ; then
+        run ip link set dev $IFACE netns $IFACE_NIC_NETNS
+    fi
+    
+    # Bring up the interface
+    run ip link set dev $IFACE up
+fi
+
+# In the down phase, take down the interface
+if [ "$PHASE" = "down" -a -d "/sys/class/net/$IFACE" ] ; then
+    run ip link set dev $IFACE down
+fi
+

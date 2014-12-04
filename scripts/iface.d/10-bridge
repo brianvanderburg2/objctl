@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Create and destroy bridge devices during pre-up and post-up
+run()
+{
+    [ "$VERBOSE" = "0" ] || echo $@
+    $@
+}
+
+if [ "$IFACE_TYPE" = "bridge" ] ; then
+    if [ "$PHASE" = "pre-up" ] ; then
+        run ip link add name $IFACE type bridge
+    fi
+
+    if [ "$PHASE" = "post-down" ] ; then
+        run ip link delete dev $IFACE
+    fi
+fi
+
+
