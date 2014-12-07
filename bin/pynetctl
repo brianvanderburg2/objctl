@@ -414,7 +414,7 @@ class State(object):
     def __init__(self, filename):
         """ Load the current state """
         self.filename = filename
-        self.state = {}
+        self.state = OrderedDict()
 
         if os.path.isfile(filename):
             with open(filename, 'rU') as handle:
@@ -432,7 +432,7 @@ class State(object):
             for i in self.state:
                 handle.write('{0}={1}\n'.format(i, self.state[i]))
 
-    def append(self, device, alias):
+    def set(self, device, alias):
         self.state[device] = alias
 
     def remove(self, device):
@@ -440,6 +440,9 @@ class State(object):
 
     def get(self, device):
         return self.state.get(device, None)
+
+    def items(self):
+        return list(self.state.keys())
 
 
 # Configuration file objects
@@ -826,7 +829,7 @@ class Config(object):
 
     def __init__(self, filename):
         """ Read the configuration file. """
-        self.updowns = OrderedDict()
+        self.updowns = {}
         self.mappings = {}
         self.allows = {}
 
@@ -881,40 +884,50 @@ class Processor(object):
         self.config = Config(config_file)
         self.state = State(state_file)
 
-    def find(self, name):
+    def find(self, name, mappings=True):
         """ Apply mappings if needed to find the name and logical. """
         parts = name.split('=')
         if len(parts) == 2:
             return (parts[0], parts[1])
 
-        if parts[0] in self.config.mappings:
+        if mappings and parts[0] in self.config.mappings:
             return (parts[0], self.config.mappings[part[0]].resolve())
 
         return (parts[0], parts[0])
 
     def allowed(self, names, allow):
+        """ Determine allowed interfaces. """
+        # NOTE: When using an allow from the command line, you can not specify
+        # a logical interfaces: "-a auto eth0" is okay, but "-a auto etho0=home"
+        # is not okay
         if allow:
             # An allow has been specified, so update names as needed
+            # The returned list should be in the same order as the
+            # allows specified in the configuration
             if allow in self.config.allows:
                 if len(names) == 0:
                     return list(self.config.allows[allow])
                 else:
-                    return [i for i in names if i in self.config.allows[allow]]
+                    return [i for i in self.config.allows[allow] if i in names]
             else:
-                message('allow {} not found'.format(allow))
+                message('allow {0} not found'.format(allow))
                 return []
         else:
             return names
 
     def putup(self, name):
         """ Bring up an interface/group """
+        (name, logical) = self.find(name)
+
         # Check if already up
         if not self.state.get(name) is None:
             message('interface/group {0} already configured'.format(name))
-            return
+            if cmdline.force:
+                message('configuration forced')
+            else:
+                return
         
         # Check if mapping is found
-        (name, logical) = self.find(name)
         if logical is None:
             message('interface/group {0} mapping unresolved'.format(name))
             return
@@ -926,23 +939,29 @@ class Processor(object):
 
         # Put it up
         self.config.updowns[logical].putup(self, name)
-        self.state.append(name, logical)
+        self.state.set(name, logical)
 
     def putdown(self, name):
         """ Bring down an interface/group. """
+        (name, logical) = self.find(name)
+
         # Make sure it is already up
-        logical = self.state.get(name)
-        if logical is None:
+        curlogical = self.state.get(name)
+        if curlogical is None:
             message('interface/group {0} not configured'.format(name))
-            return
+            if cmdline.force:
+                curlogical=logical
+                message('configuration forced')
+            else:
+                return
 
         # Check that definition exists
-        if not logical in self.config.updowns:
+        if not curlogical in self.config.updowns:
             message('interface/group {0} unknown'.format(name))
             return
 
         # Put it down
-        self.config.updowns[logical].putdown(self, name)
+        self.config.updowns[curlogical].putdown(self, name)
         self.state.remove(name)
 
     def cmdup(self, names, allow):
@@ -954,8 +973,13 @@ class Processor(object):
     def cmddown(self, names, allow):
         """ Bring down interfaces/groups from the command line. """
         names = self.allowed(names, allow)
-        for i in names:
+        for i in reversed(names):
             self.putdown(i)
+
+    def cmdshutdown(self):
+        """ Shut down all current interfaces. """
+        for name in reversed(self.state.items()):
+            self.putdown(name)
 
     def save(self):
         """ Save information before quitting. """
@@ -970,12 +994,13 @@ parser = argparse.ArgumentParser(description='Simple python network interface co
 parser.add_argument('-a', dest='allow', action='store', required=False, help='Allow only interfaces and groups that match to be affected.')
 parser.add_argument('-v', dest='verbose', action='store_true', required=False, default=False, help='Show verbose details.')
 parser.add_argument('-e', dest='dumpenv', action='store_true', required=False, default=False, help='Dump environment variables for each executed command.')
-group = parser.add_argument_group('group')
+parser.add_argument('-f', dest='force', action='store_true', required=False, default=False, help='Force interface configuration or deconfiguration.')
+group = parser.add_argument_group('files')
 group.add_argument('-s', dest='state_file', action='store', default=state_file, help='Specify a different state file.')
-group.add_argument('-c', dest='config_file', action='store', default=config_file, help='Specify a different configuration file.')
+group.add_argument('-i', dest='config_file', action='store', default=config_file, help='Specify a different interfaces file.')
 group.add_argument('-d', dest='script_dir', action='store', default=script_dir, help='Specify a different hook script directory.')
 
-parser.add_argument('action', action='store', choices=['up', 'down', 'list', 'query'], help='Action to perform with specified interfaces and groups.')
+parser.add_argument('action', action='store', choices=['up', 'down', 'shutdown', 'list', 'query'], help='Action to perform with specified interfaces and groups.')
 parser.add_argument('targets', action='store', nargs='*', help='Interfaces and groups to affect')
 
 cmdline = parser.parse_args()
@@ -991,6 +1016,8 @@ if cmdline.action == 'up':
     proc.cmdup(cmdline.targets, cmdline.allow)
 elif cmdline.action == 'down':
     proc.cmddown(cmdline.targets, cmdline.allow)
+elif cmdline.action == 'shutdown':
+    proc.cmdshutdown()
 else:
     print("Error: action '" + cmdline.action + "' not implemented.")
     sys.exit(-1)
