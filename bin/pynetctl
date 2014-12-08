@@ -41,6 +41,11 @@ def message(msg):
 
 def run(command, env={}, show=None):
     """ Run a command with an environment. """
+    # If command is a tuple/list, first is command, second is env
+    if isinstance(command, (list, tuple)):
+        env = dict(env.items() + command[1].items())
+        command = command[0]
+
     if cmdline.verbose:
         message(show if show else command)
     if cmdline.dumpenv:
@@ -458,8 +463,8 @@ class Iface(IUpDown):
                 for j in i.sublines:
                     self.postdown.append(j.content)
 
-            elif words[0] == 'command':
-                config.command(i, self.preup, self.up, self.postup, self.predown, self.down, self.postdown)
+            elif words[0] == 'call':
+                config.call(i, self.preup, self.up, self.postup, self.predown, self.down, self.postdown)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -702,8 +707,8 @@ class Group(IUpDown):
                 for j in i.sublines:
                     self.postdown.append(j.content)
 
-            elif words[0] == 'command':
-                config.command(i, self.preup, None, self.postup, self.predown, None, self.postdown)
+            elif words[0] == 'call':
+                config.call(i, self.preup, None, self.postup, self.predown, None, self.postdown)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -760,8 +765,8 @@ class Group(IUpDown):
             run(i, env)
 
 
-class Command(object):
-    """ A command is a reusable set of pre/post commands. """
+class Define(object):
+    """ A define is a reusable set of pre/post commands. """
 
     def __init__(self, line):
         """ Load the commands. """
@@ -810,19 +815,27 @@ class Command(object):
                 raise Error('Unexpected line: ' + i.position)
 
     def evaluate(self, line, preup, up, postup, predown, down, postdown):
-        """ Evaluate the commands and merge into the lists """
-        # Up commands are appended to their liss
+        """ Evaluate the defines and merge into the lists """
+        # Build the environment
+        env = {}
+        for i in line.words[2:]:
+            parts = i.split('=')
+            if len(parts) > 1:
+                (name, value) = makeenv(parts[0], parts[1])
+                env[name] = value
+
+        # Up commands defines are appended to their liss
         if preup:
             for i in self.preup:
-                preup.append(self.expand(line, i))
+                preup.append((i, env))
 
         if up:
             for i in self.up:
-                up.append(self.expand(line, i))
+                up.append((i, env))
 
         if postup:
             for i in self.postup:
-                postup.append(self.expand(line, i))
+                postup.append((i, env))
 
         # Down commands are inserted at the beginning of their lists.
         # Reversing these ensures when they are inserted into the top of the
@@ -830,32 +843,15 @@ class Command(object):
         # object.
         if predown:
             for i in reversed(self.predown):
-                predown.insert(0, self.expand(line, i))
+                predown.insert(0, (i, env))
 
         if down:
             for i in reversed(self.down):
-                down.insert(0, self.expand(line, i))
+                down.insert(0, (i, env))
 
         if postdown:
             for i in reversed(self.postdown):
-                postdown.insert(0, self.expand(line, i))
-
-    def expand(self, line, command):
-        """ Expand the string based on the parameters. """
-        params = line.words[2:]
-        def subfn(mo):
-            index = mo.group(1)
-            if len(index) == 0:
-                return '%'
-
-            index = int(index)
-            if index >= 1 and index <= len(params):
-                return params[index - 1]
-            else:
-                raise Error('Invalid offset in command expansion:' + line.position)
-
-        return re.sub('%(.*?)%', subfn, command)
-
+                postdown.insert(0, (i, env))
 
 class Mapping(object):
     """ A mapping object. """
@@ -874,7 +870,7 @@ class Config(object):
     def __init__(self, filename):
         """ Read the configuration file. """
         self.updowns = {}
-        self.commands = {}
+        self.defines = {}
         self.mappings = {}
         self.allows = {}
 
@@ -907,12 +903,12 @@ class Config(object):
                 else:
                     self.updowns[group.name] = group
 
-            elif words[0] == 'command':
-                command = Command(i)
-                if command.name in self.commands:
-                    raise Error('Command name already specified: ' + i.position)
+            elif words[0] == 'define':
+                define = Define(i)
+                if define.name in self.defines:
+                    raise Error('Define name already specified: ' + i.position)
                 else:
-                    self.commands[command.name] = command
+                    self.defines[define.name] = define
 
             elif words[0] == 'mapping':
                 mapping = Mapping(i)
@@ -924,17 +920,17 @@ class Config(object):
             else:
                 raise Error('Unexpected line: ' + i.position)
 
-    def command(self, line, preup, up, postup, predown, down, postdown):
-        """ Call a command. """
+    def call(self, line, preup, up, postup, predown, down, postdown):
+        """ Call a define. """
         words = line.words
         if len(words) > 1:
             name = words[1]
-            if name in self.commands:
-                self.commands[name].evaluate(line, preup, up, postup, predown, down, postdown)
+            if name in self.defines:
+                self.defines[name].evaluate(line, preup, up, postup, predown, down, postdown)
             else:
-                raise Error('Unknown command called: ' + line.position)
+                raise Error('Unknown define called: ' + line.position)
         else:
-            raise Error('Command name not specified: ' + line.position)
+            raise Error('Define name not specified: ' + line.position)
 
 
 
