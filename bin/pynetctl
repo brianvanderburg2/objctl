@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import argparse
+import fnmatch
 from collections import OrderedDict
 
 
@@ -836,11 +837,67 @@ class Mapping(object):
     """ A mapping object. """
     def __init__(self, line):
         """ Read the mapping information """
-        pass
 
-    def resolve(self):
+        self.script = None
+        self.lines = []
+
+        words = line.words
+
+        # Read the pattern
+        if len(words) > 1:
+            self.patterns = words[1:]
+        else:
+            raise Error('Mapping pattern expected: ' + line.position)
+
+        # Read sublines
+        for i in line.sublines:
+            words = i.words
+
+            if words[0] == 'script':
+                if len(words) > 1:
+                    if self.script is None:
+                        self.script = words[1]
+                    else:
+                        raise Error('Script can only be specified once: ' + i.position)
+                else:
+                    raise Error('Script path expected: ' + i.position)
+
+            elif words[0] == 'map':
+                if len(words) > 0:
+                    self.lines.append(' '.join(words[1:]))
+                else:
+                    raise Error('Unexpected end of line: ' + i.position)
+
+            else:
+                raise Error('Unexpected line: ' + i.position)
+
+    def check(self, name):
+        return any([fnmatch.fnmatch(name, i) for i in self.patterns])
+
+    def resolve(self, name):
         """ Resolve the mapping to the logical interface. """
-        pass
+        # Start the process
+        command = [self.script, name]
+        env = { 'PATH': os.environ['PATH'] }
+        ps = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+
+        # Send input
+        for i in self.lines:
+            ps.stdin.write(i + '\n')
+        ps.stdin.close()
+
+        # Read the output
+        retval = ps.wait()
+        result = None
+        for i in ps.stdout:
+            result = i.strip()
+            if len(result) == 0:
+                result = None
+            else:
+                break
+        ps.stdout.close()
+
+        return result
 
 
 class Config(object):
@@ -850,7 +907,7 @@ class Config(object):
         """ Read the configuration file. """
         self.updowns = {}
         self.defines = {}
-        self.mappings = {}
+        self.mappings = []
         self.allows = {}
 
         p = Parser(filename)
@@ -891,10 +948,7 @@ class Config(object):
 
             elif words[0] == 'mapping':
                 mapping = Mapping(i)
-                if mapping.name in self.mappings:
-                    raise Error('Mapping name already specified: ' + i.position)
-                else:
-                    self.mappings[i] = mapping
+                self.mappings.append(mapping)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -930,8 +984,10 @@ class Processor(object):
         if len(parts) == 2:
             return (parts[0], parts[1])
 
-        if mappings and parts[0] in self.config.mappings:
-            return (parts[0], self.config.mappings[part[0]].resolve())
+        if mappings:
+            for i in self.config.mappings:
+                if i.check(name):
+                    return (parts[0], i.resolve(name))
 
         return (parts[0], parts[0])
 
@@ -960,8 +1016,9 @@ class Processor(object):
         (name, logical) = self.find(name)
 
         # Check if already up
-        if not self.state.get(name) is None:
-            message('interface/group {0} already configured'.format(name))
+        current = self.state.get(name)
+        if not current is None:
+            message('interface/group {0} already configured as {1}'.format(name, current))
             if cmdline.force:
                 message('configuration forced')
             else:
@@ -974,7 +1031,7 @@ class Processor(object):
 
         # Check that definition exists
         if not logical in self.config.updowns:
-            message('interface/group {0} unknown'.format(name))
+            message('interface/group {0}={1} unknown'.format(name, logical))
             return
 
         # Put it up
@@ -997,7 +1054,7 @@ class Processor(object):
 
         # Check that definition exists
         if not curlogical in self.config.updowns:
-            message('interface/group {0} unknown'.format(name))
+            message('interface/group {0}={1} unknown'.format(name, curlogical))
             return
 
         # Put it down
