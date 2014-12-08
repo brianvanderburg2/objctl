@@ -43,7 +43,7 @@ def run(command, env={}, show=None):
     """ Run a command with an environment. """
     # If command is a tuple/list, first is command, second is env
     if isinstance(command, (list, tuple)):
-        env = dict(env.items() + command[1].items())
+        env = mergedict(env, command[1])
         command = command[0]
 
     if cmdline.verbose:
@@ -71,6 +71,13 @@ def makeenv(name, value):
         value = ' '.join(value)
 
     return (name, value)
+
+def mergedict(*args):
+    """ Merge multiple dictionaries. """
+    result = {}
+    for i in args:
+        result.update(i)
+    return result
 
 
 # Parser related code
@@ -558,10 +565,10 @@ class Iface(IUpDown):
         env['PHASE'] = 'pre-up'
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
+            runparts(iface_dir, mergedict(env, self.iface_env))
         
         for i in self.proto_types_env:
-            runparts(proto_dir, dict(env.items() + i.items()))
+            runparts(proto_dir, mergedict(env, i))
 
         for i in self.preup:
             run(i, env)
@@ -573,10 +580,10 @@ class Iface(IUpDown):
         env['PHASE'] = 'up'
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
+            runparts(iface_dir, mergedict(env, self.iface_env))
 
         for i in self.protos_env:
-            runparts(proto_dir, dict(env.items() + i.items()))
+            runparts(proto_dir, mergedict(env, i))
 
         for i in self.up:
             run(i, env)
@@ -588,10 +595,10 @@ class Iface(IUpDown):
         env['PHASE'] = 'post-up'
         
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()))
+            runparts(iface_dir, mergedict(env, self.iface_env))
         
         for i in self.proto_types_env:
-            runparts(proto_dir, dict(env.items() + i.items()))
+            runparts(proto_dir, mergedict(env, i))
 
         for i in self.postup:
             run(i, env)
@@ -621,10 +628,10 @@ class Iface(IUpDown):
             run(i, env)
         
         for i in reversed(self.proto_types_env):
-            runparts(proto_dir, dict(env.items() + i.items()), True)
+            runparts(proto_dir, mergedict(env, i), True)
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
+            runparts(iface_dir, mergedict(env, self.iface_env), True)
 
         # down
         if cmdline.verbose:
@@ -636,10 +643,10 @@ class Iface(IUpDown):
             run(i, env)
         
         for i in reversed(self.protos_env):
-            runparts(proto_dir, dict(env.items() + i.items()), True)
+            runparts(proto_dir, mergedict(env, i), True)
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
+            runparts(iface_dir, mergedict(env, self.iface_env), True)
 
         # post-down
         if cmdline.verbose:
@@ -651,10 +658,10 @@ class Iface(IUpDown):
             run(i, env)
         
         for i in reversed(self.proto_types_env):
-            runparts(proto_dir, dict(env.items() + i.items()), True)
+            runparts(proto_dir, mergedict(env, i), True)
 
         if self.iface_env:
-            runparts(iface_dir, dict(env.items() + self.iface_env.items()), True)
+            runparts(iface_dir, mergedict(env, self.iface_env), True)
 
 
 class Group(IUpDown):
@@ -1044,16 +1051,20 @@ state_file = os.path.abspath(cmdline.state_file)
 config_file = os.path.abspath(cmdline.config_file)
 
 # Create the processor and execute the actions
-proc = Processor()
-if cmdline.action == 'up':
-    proc.cmdup(cmdline.targets, cmdline.allow)
-elif cmdline.action == 'down':
-    proc.cmddown(cmdline.targets, cmdline.allow)
-elif cmdline.action == 'shutdown':
-    proc.cmdshutdown()
-else:
-    print("Error: action '" + cmdline.action + "' not implemented.")
-    sys.exit(-1)
+try:
+    proc = Processor()
+    if cmdline.action == 'up':
+        proc.cmdup(cmdline.targets, cmdline.allow)
+    elif cmdline.action == 'down':
+        proc.cmddown(cmdline.targets, cmdline.allow)
+    elif cmdline.action == 'shutdown':
+        proc.cmdshutdown()
+    else:
+        print("Error: action '" + cmdline.action + "' not implemented.")
+        sys.exit(-1)
 
-proc.save()
+    proc.save()
+
+except Error as e:
+    message(e.message)
 
