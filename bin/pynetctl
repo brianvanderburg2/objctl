@@ -258,8 +258,6 @@ class Parser(object):
         self._unread = []
         self._segments = []
         self._segments.append(ParserSegment(filename, self._stack))
-        self._defines = {}
-        self._condstatus = []
 
     def __enter__(self):
         return self
@@ -296,33 +294,9 @@ class Parser(object):
                 segment.close()
                 self._segments.pop()
                 continue
-
-            # Keep only condition levels less than line level
-            self._condstatus = filter(lambda i: i[0] < line.level, self._condstatus)
             
             # Handle two-part special items
             words = line.words
-
-            # If we are in a condition that is false, skip the lines
-            if len(self._condstatus) > 0 and self._condstatus[-1][1] == False:
-                continue
-            
-            # If it is a condition, test it
-            if len(words) > 0 and words[0] in ('ifdef', 'ifndef', 'undef'):
-                if len(words) > 1:
-                    self.checkIdent(words[1], line.position)
-
-                    if words[0] == 'ifdef':
-                        self._condstatus.append((line.level, words[1] in self._defines))
-                    elif words[0] == 'ifndef':
-                        self._condlines.append(line)
-                        self._condstatus.append((line.level, not words[1] in self._defines))
-                    elif words[0] == 'undef':
-                        self._defines.pop(words[1], None)
-
-                    continue
-                else:
-                    raise Error('Expected identifier: ' + line.position)
 
             # If it is an inclusion, open new file or directory
             if len(words) > 0 and words[0] == 'include':
@@ -346,44 +320,11 @@ class Parser(object):
                 else:
                     raise Error("No filename specified: " + line.position)
 
-            # If it is a define
-            if len(words) > 0 and words[0] == 'define':
-                if len(words) > 1:
-                    self.checkIdent(words[1], line.position)
-
-                    if len(words) > 2:
-                        self._defines[words[1]] = words[2]
-                    else:
-                        self._defines[words[1]] = '1'
-
-                    continue
-                else:
-                    raise Error('Expected identifier: ' + line.position)
-
             # If anything else, it is a line to return
-            self.fix(line)
             return line
 
     def unread(self, line):
         self._unread.append(line)
-
-    def checkIdent(self, ident, position):
-        if not re.match('^[A-Za-z][A-Za-z0-9_\\.]*$', ident):
-            raise Error('Invalid identifier: ' + position)
-
-    def fix(self, line):
-        def subfn(mo):
-            key = mo.group(1)
-            if len(key) == 0:
-                return '%'
-            elif key in self._defines:
-                return self._defines[key]
-            else:
-                raise Error('Unknown value "' + key + '": ' + line.position)
-
-        line._content = re.sub('%(.*?)%', subfn, line.content)
-        line._words = None # Since we are changing the content of this line, force recalculation of words
-        line._level = line._level - len(self._condstatus)
 
     def read(self):
         """ Read all lines and then build the sublines lists """
@@ -460,7 +401,7 @@ class IUpDown(object):
 class Iface(IUpDown):
     """ A class that represents the interface. """
 
-    def __init__(self, line):
+    def __init__(self, config, line):
         """ Load the interface information. """
         self.preup = []
         self.up = []
@@ -516,6 +457,9 @@ class Iface(IUpDown):
             elif words[0] == 'post-down':
                 for j in i.sublines:
                     self.postdown.append(j.content)
+
+            elif words[0] == 'command':
+                config.command(i, self.preup, self.up, self.postup, self.predown, self.down, self.postdown)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -719,7 +663,7 @@ class Iface(IUpDown):
 class Group(IUpDown):
     """ A class that represents a group of interfaces. """
 
-    def __init__(self, line):
+    def __init__(self, config, line):
         """ Load the group information. """
         self.preup = []
         self.postup = []
@@ -757,6 +701,9 @@ class Group(IUpDown):
             elif words[0] == 'post-down':
                 for j in i.sublines:
                     self.postdown.append(j.content)
+
+            elif words[0] == 'command':
+                config.command(i, self.preup, None, self.postup, self.predown, None, self.postdown)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -813,6 +760,103 @@ class Group(IUpDown):
             run(i, env)
 
 
+class Command(object):
+    """ A command is a reusable set of pre/post commands. """
+
+    def __init__(self, line):
+        """ Load the commands. """
+        self.preup = []
+        self.up = []
+        self.postup = []
+        self.predown = []
+        self.down = []
+        self.postdown = []
+
+        words = line.words
+
+        # Read name
+        if len(words) > 1:
+            self.name = words[1]
+
+        # Read lines
+        for i in line.sublines:
+            words = i.words
+
+            if words[0] == 'pre-up':
+                for j in i.sublines:
+                    self.preup.append(j.content)
+
+            elif words[0] == 'up':
+                for j in i.sublines:
+                    self.up.append(j.content)
+
+            elif words[0] == 'post-up':
+                for j in i.sublines:
+                    self.postup.append(j.content)
+
+            elif words[0] == 'pre-down':
+                for j in i.sublines:
+                    self.predown.append(j.content)
+
+            elif words[0] == 'down':
+                for j in i.sublines:
+                    self.down.append(j.content)
+
+            elif words[0] == 'post-down':
+                for j in i.sublines:
+                    self.postdown.append(j.content)
+
+            else:
+                raise Error('Unexpected line: ' + i.position)
+
+    def evaluate(self, line, preup, up, postup, predown, down, postdown):
+        """ Evaluate the commands and merge into the lists """
+        # Up commands are appended to their liss
+        if preup:
+            for i in self.preup:
+                preup.append(self.expand(line, i))
+
+        if up:
+            for i in self.up:
+                up.append(self.expand(line, i))
+
+        if postup:
+            for i in self.postup:
+                postup.append(self.expand(line, i))
+
+        # Down commands are inserted at the beginning of their lists.
+        # Reversing these ensures when they are inserted into the top of the
+        # down lists, they are inserted in the order specified in the command
+        # object.
+        if predown:
+            for i in reversed(self.predown):
+                predown.insert(0, self.expand(line, i))
+
+        if down:
+            for i in reversed(self.down):
+                down.insert(0, self.expand(line, i))
+
+        if postdown:
+            for i in reversed(self.postdown):
+                postdown.insert(0, self.expand(line, i))
+
+    def expand(self, line, command):
+        """ Expand the string based on the parameters. """
+        params = line.words[2:]
+        def subfn(mo):
+            index = mo.group(1)
+            if len(index) == 0:
+                return '%'
+
+            index = int(index)
+            if index >= 1 and index <= len(params):
+                return params[index - 1]
+            else:
+                raise Error('Invalid offset in command expansion:' + line.position)
+
+        return re.sub('%(.*?)%', subfn, command)
+
+
 class Mapping(object):
     """ A mapping object. """
     def __init__(self, line):
@@ -830,6 +874,7 @@ class Config(object):
     def __init__(self, filename):
         """ Read the configuration file. """
         self.updowns = {}
+        self.commands = {}
         self.mappings = {}
         self.allows = {}
 
@@ -849,18 +894,25 @@ class Config(object):
                     raise Error('Expected name and object: ' + i.position)
 
             elif words[0] == 'iface' or words[0] == 'interface':
-                iface = Iface(i)
+                iface = Iface(self, i)
                 if iface.name in self.updowns:
                     raise Error('Interface or group name already specified: ' + i.position)
                 else:
                     self.updowns[iface.name] = iface
 
             elif words[0] == 'group':
-                group = Group(i)
+                group = Group(self, i)
                 if group.name in self.updowns:
                     raise Error('Interface or group name already specified: ' + i.position)
                 else:
                     self.updowns[group.name] = group
+
+            elif words[0] == 'command':
+                command = Command(i)
+                if command.name in self.commands:
+                    raise Error('Command name already specified: ' + i.position)
+                else:
+                    self.commands[command.name] = command
 
             elif words[0] == 'mapping':
                 mapping = Mapping(i)
@@ -871,6 +923,19 @@ class Config(object):
 
             else:
                 raise Error('Unexpected line: ' + i.position)
+
+    def command(self, line, preup, up, postup, predown, down, postdown):
+        """ Call a command. """
+        words = line.words
+        if len(words) > 1:
+            name = words[1]
+            if name in self.commands:
+                self.commands[name].evaluate(line, preup, up, postup, predown, down, postdown)
+            else:
+                raise Error('Unknown command called: ' + line.position)
+        else:
+            raise Error('Command name not specified: ' + line.position)
+
 
 
 # Processor to manage things.
