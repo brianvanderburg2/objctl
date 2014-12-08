@@ -428,6 +428,9 @@ class Iface(IUpDown):
             raise Error('Expected name: ' + line.position)
 
         # Read other stuff
+        upmap = { 'pre-up': self.preup, 'up': self.up, 'post-up': self.postup }
+        downmap = { 'pre-down': self.predown, 'down': self.down, 'post-down': self.postdown }
+
         for i in line.sublines:
             words = i.words
 
@@ -439,29 +442,18 @@ class Iface(IUpDown):
             elif words[0] == 'proto':
                 self.readProto(i)
 
-            elif words[0] == 'pre-up':
+            # Each up section is executed top to bottom
+            elif words[0] in upmap:
+                target = upmap[words[0]]
                 for j in i.sublines:
-                    self.preup.append(j.content)
+                    target.append(j.content)
 
-            elif words[0] == 'up':
-                for j in i.sublines:
-                    self.up.append(j.content)
-
-            elif words[0] == 'post-up':
-                for j in i.sublines:
-                    self.postup.append(j.content)
-
-            elif words[0] == 'pre-down':
-                for j in i.sublines:
-                    self.predown.append(j.content)
-
-            elif words[0] == 'down':
-                for j in i.sublines:
-                    self.down.append(j.content)
-
-            elif words[0] == 'post-down':
-                for j in i.sublines:
-                    self.postdown.append(j.content)
+            # Each down section is executed bottom to top, but
+            # the lines in each section are still executed in order
+            elif words[0] in downmap:
+                target = downmap[words[0]]
+                for j in reversed(i.sublines):
+                    target.insert(0, j.content)
 
             elif words[0] == 'call':
                 config.call(i, self.preup, self.up, self.postup, self.predown, self.down, self.postdown)
@@ -688,24 +680,24 @@ class Group(IUpDown):
             raise Error('Expected name and optional dependencies: ' + line.position)
 
         # Read other stuff
+        upmap = { 'pre-up': self.preup, 'post-up': self.postup }
+        downmap = { 'pre-down': self.predown, 'post-down': self.postdown }
+
         for i in line.sublines:
             words = i.words
 
-            if words[0] == 'pre-up':
+            # Each up section is executed top to bottom
+            if words[0] in upmap:
+                target = upmap[words[0]]
                 for j in i.sublines:
-                    self.preup.append(j.content)
+                    target.append(j.content)
 
-            elif words[0] == 'post-up':
-                for j in i.sublines:
-                    self.postup.append(j.content)
-
-            elif words[0] == 'pre-down':
-                for j in i.sublines:
-                    self.predown.append(j.content)
-
-            elif words[0] == 'post-down':
-                for j in i.sublines:
-                    self.postdown.append(j.content)
+            # Each down section is executed bottom to top, but
+            # the lines in each section are still executed in order
+            elif words[0] in downmap:
+                target = downmap[words[0]]
+                for j in reversed(i.sublines):
+                    target.insert(0, j.content)
 
             elif words[0] == 'call':
                 config.call(i, self.preup, None, self.postup, self.predown, None, self.postdown)
@@ -784,32 +776,24 @@ class Define(object):
             self.name = words[1]
 
         # Read lines
+        linemap = {
+            'pre-up': self.preup, 'up': self.up, 'post-up': self.postup,
+            'pre-down': self.predown, 'down': self.down, 'post-down': self.postdown
+        }
+
         for i in line.sublines:
             words = i.words
 
-            if words[0] == 'pre-up':
-                for j in i.sublines:
-                    self.preup.append(j.content)
-
-            elif words[0] == 'up':
-                for j in i.sublines:
-                    self.up.append(j.content)
-
-            elif words[0] == 'post-up':
-                for j in i.sublines:
-                    self.postup.append(j.content)
-
-            elif words[0] == 'pre-down':
-                for j in i.sublines:
-                    self.predown.append(j.content)
-
-            elif words[0] == 'down':
-                for j in i.sublines:
-                    self.down.append(j.content)
-
-            elif words[0] == 'post-down':
-                for j in i.sublines:
-                    self.postdown.append(j.content)
+            # We remember all the lines in order here, then
+            # reverse the ones needed when inserting them into
+            # the interface/group up/down commands
+            if words[0] in linemap:
+                target = linemap[words[0]]
+                if len(target) > 0:
+                    raise Error('A ' + words[0] + ' section should only be specfied once in define: ' + i.position)
+                else:
+                    for j in i.sublines:
+                        target.append(j.content)
 
             else:
                 raise Error('Unexpected line: ' + i.position)
@@ -824,34 +808,22 @@ class Define(object):
                 (name, value) = makeenv(parts[0], parts[1])
                 env[name] = value
 
-        # Up commands defines are appended to their liss
-        if preup:
-            for i in self.preup:
-                preup.append((i, env))
+        # Insert the command lines
+        upmap = ((self.preup, preup), (self.up, up), (self.postup, postup))
+        downmap = ((self.predown, predown), (self.down, down), (self.postdown, postdown))
 
-        if up:
-            for i in self.up:
-                up.append((i, env))
+        # Each up section is executed top to bottom
+        for (ours, theirs) in upmap:
+            if not theirs is None:
+                for i in ours:
+                    theirs.append((i, env))
 
-        if postup:
-            for i in self.postup:
-                postup.append((i, env))
-
-        # Down commands are inserted at the beginning of their lists.
-        # Reversing these ensures when they are inserted into the top of the
-        # down lists, they are inserted in the order specified in the command
-        # object.
-        if predown:
-            for i in reversed(self.predown):
-                predown.insert(0, (i, env))
-
-        if down:
-            for i in reversed(self.down):
-                down.insert(0, (i, env))
-
-        if postdown:
-            for i in reversed(self.postdown):
-                postdown.insert(0, (i, env))
+        # Each down section is executed bottom to top, but
+        # the lines in each section are still executed in order
+        for (ours, theirs) in downmap:
+            if not theirs is None:
+                for i in reversed(ours):
+                    theirs.insert(0, (i, env))
 
 class Mapping(object):
     """ A mapping object. """
