@@ -52,8 +52,10 @@ def run(command, env={}, show=None):
     if cmdline.dumpenv:
         message(str(env))
         
+    # return TRUE if command exits successfully or if we are forced
+    # return FALSE only if command exits with failure and we are not forced
     p = subprocess.Popen(args=command, env=env, shell=True)
-    return p.wait()
+    return (p.wait() == 0) or cmdline.force
 
 def runparts(path, env={}, reverse=False):
     """ Run all files in a directory with an environment. """
@@ -63,7 +65,11 @@ def runparts(path, env={}, reverse=False):
         filename = os.path.join(path, i)
         st = os.stat(filename)
         if st.st_mode & stat.S_IFREG and st.st_mode & stat.S_IXUSR:
-            run(filename, env, os.path.join(basename, i))
+            status = run(filename, env, os.path.join(basename, i))
+            if status is False:
+                return False
+
+    return True
 
 def makeenv(name, value):
     """ Make an environment variable from a configuration name. """
@@ -561,48 +567,68 @@ class Iface(IUpDown):
 
         # pre-up
         if cmdline.verbose:
-            message('pre-up')
+            message('interface pre-up')
 
         env['PHASE'] = 'pre-up'
 
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env))
+            status = runparts(iface_dir, mergedict(env, self.iface_env))
+            if status is False:
+                return False
         
         for i in self.proto_types_env:
-            runparts(proto_dir, mergedict(env, i))
+            status = runparts(proto_dir, mergedict(env, i))
+            if status is False:
+                return False
 
         for i in self.preup:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
 
         # up
         if cmdline.verbose:
-            message('up')
+            message('interface up')
 
         env['PHASE'] = 'up'
 
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env))
+            status = runparts(iface_dir, mergedict(env, self.iface_env))
+            if status is False:
+                return False
 
         for i in self.protos_env:
-            runparts(proto_dir, mergedict(env, i))
+            status = runparts(proto_dir, mergedict(env, i))
+            if status is False:
+                return False
 
         for i in self.up:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
 
         # post-up
         if cmdline.verbose:
-            message('post-up')
+            message('interface post-up')
 
         env['PHASE'] = 'post-up'
         
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env))
+            status = runparts(iface_dir, mergedict(env, self.iface_env))
+            if status is False:
+                return False
         
         for i in self.proto_types_env:
-            runparts(proto_dir, mergedict(env, i))
+            status = runparts(proto_dir, mergedict(env, i))
+            if status is False:
+                return False
 
         for i in self.postup:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
+
+        return True
     
     def putdown(self, processor, iface):
         """ Bring an interface down. """
@@ -613,7 +639,7 @@ class Iface(IUpDown):
                'PATH': os.environ['PATH'],
                'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('configuring interface {0}={1}'.format(iface, self.name))
+        message('deconfiguring interface {0}={1}'.format(iface, self.name))
         
         # Determine directories
         iface_dir = os.path.join(script_dir, 'iface.d')
@@ -621,49 +647,68 @@ class Iface(IUpDown):
 
         # pre-down
         if cmdline.verbose:
-            message('pre-down')
+            message('interface pre-down')
 
         env['PHASE'] = 'pre-down'
 
         for i in self.predown:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
         
         for i in reversed(self.proto_types_env):
-            runparts(proto_dir, mergedict(env, i), True)
+            status = runparts(proto_dir, mergedict(env, i), True)
+            if status is False:
+                return False
 
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env), True)
+            status = runparts(iface_dir, mergedict(env, self.iface_env), True)
+            if status is False:
+                return False
 
         # down
         if cmdline.verbose:
-            message('down')
+            message('interface down')
 
         env['PHASE'] = 'down'
 
         for i in self.down:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
         
         for i in reversed(self.protos_env):
-            runparts(proto_dir, mergedict(env, i), True)
+            status = runparts(proto_dir, mergedict(env, i), True)
+            if status is False:
+                return False
 
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env), True)
+            status = runparts(iface_dir, mergedict(env, self.iface_env), True)
+            if status is False:
+                return False
 
         # post-down
         if cmdline.verbose:
-            message('post-down')
+            message('interface post-down')
 
         env['PHASE'] = 'post-down'
         
         for i in self.postdown:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
         
         for i in reversed(self.proto_types_env):
-            runparts(proto_dir, mergedict(env, i), True)
+            status = runparts(proto_dir, mergedict(env, i), True)
+            if status is False:
+                return False
 
         if self.iface_env:
-            runparts(iface_dir, mergedict(env, self.iface_env), True)
+            status = runparts(iface_dir, mergedict(env, self.iface_env), True)
+            if status is False:
+                return False
 
+        return True
 
 class Group(IUpDown):
     """ A class that represents a group of interfaces. """
@@ -726,18 +771,32 @@ class Group(IUpDown):
         message('configuring group {0}={1}'.format(group, self.name))
 
         # pre-up
+        if cmdline.verbose:
+            message('group pre-up')
+
         env['PHASE'] = 'pre-up'
         for i in self.preup:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
 
         # up
         for i in self.dependencies:
-            processor.putup(i)
+            status = processor.putup(i)
+            if status is False:
+                return False
 
         # post-up
+        if cmdline.verbose:
+            message('group post-up')
+
         env['PHASE'] = 'post-up'
         for i in self.postup:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
+
+        return True
     
     def putdown(self, processor, group):
         """ Bring an group down. """
@@ -748,21 +807,35 @@ class Group(IUpDown):
                'PATH': os.environ['PATH'],
                'VERBOSE': '1' if cmdline.verbose else '0'}
 
-        message('configuring group {0}={1}'.format(group, self.name))
-        
+        message('deconfiguring group {0}={1}'.format(group, self.name))
+
         # pre-down
+        if cmdline.verbose:
+            message('group pre-down')
+
         env['PHASE'] = 'pre-down'
         for i in self.predown:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
 
         # down
         for i in reversed(self.dependencies):
-            processor.putdown(i)
+            status = processor.putdown(i)
+            if status is False:
+                return False
 
         # post-down
+        if cmdline.verbose:
+            message('group post-down')
+
         env['PHASE'] = 'post-down'
         for i in self.postdown:
-            run(i, env)
+            status = run(i, env)
+            if status is False:
+                return False
+
+        return True
 
 
 class Define(object):
@@ -897,7 +970,7 @@ class Mapping(object):
                 break
         ps.stdout.close()
 
-        return result
+        return result if retval == 0 else None
 
 
 class Config(object):
@@ -1022,21 +1095,30 @@ class Processor(object):
             if cmdline.force:
                 message('configuration forced')
             else:
-                return
+                return False
         
         # Check if mapping is found
         if logical is None:
             message('interface/group {0} mapping unresolved'.format(name))
-            return
+            return cmdline.force
 
         # Check that definition exists
         if not logical in self.config.updowns:
             message('interface/group {0}={1} unknown'.format(name, logical))
-            return
+            return cmdline.force
 
         # Put it up
-        self.config.updowns[logical].putup(self, name)
-        self.state.set(name, logical)
+        status = self.config.updowns[logical].putup(self, name)
+        if status is False:
+            # Failed to bring it up and not forced.  Instead of leaving it in
+            # unstable state, try to bring it back down
+            message('failed to configure {0}={1}'.format(name, logical))
+            self.config.updowns[logical].putdown(self, name)
+            return False
+        else:
+            self.state.set(name, logical)
+
+        return True
 
     def putdown(self, name):
         """ Bring down an interface/group. """
@@ -1050,33 +1132,51 @@ class Processor(object):
                 curlogical=logical
                 message('configuration forced')
             else:
-                return
+                return False
 
         # Check that definition exists
         if not curlogical in self.config.updowns:
             message('interface/group {0}={1} unknown'.format(name, curlogical))
-            return
+            return cmdline.force
 
         # Put it down
-        self.config.updowns[curlogical].putdown(self, name)
-        self.state.remove(name)
+        status = self.config.updowns[curlogical].putdown(self, name)
+        if status is False:
+            message('failed to deconfigure {0}={1}'.format(name, logical))
+            return False
+        else:
+            self.state.remove(name)
+
+        return True
 
     def cmdup(self, names, allow):
         """ Bring up interfaces/groups from the command line. """
         names = self.allowed(names, allow)
         for i in names:
-            self.putup(i)
+            status = self.putup(i)
+            if status is False:
+                return False
+
+        return True
     
     def cmddown(self, names, allow):
         """ Bring down interfaces/groups from the command line. """
         names = self.allowed(names, allow)
         for i in reversed(names):
-            self.putdown(i)
+            status = self.putdown(i)
+            if status is False:
+                return False
+
+        return True
 
     def cmdshutdown(self):
         """ Shut down all current interfaces. """
         for name in reversed(self.state.items()):
-            self.putdown(name)
+            status = self.putdown(name)
+            if status is False:
+                return False
+
+        return True
 
     def save(self):
         """ Save information before quitting. """
@@ -1111,17 +1211,19 @@ config_file = os.path.abspath(cmdline.config_file)
 try:
     proc = Processor()
     if cmdline.action == 'up':
-        proc.cmdup(cmdline.targets, cmdline.allow)
+        status = proc.cmdup(cmdline.targets, cmdline.allow)
     elif cmdline.action == 'down':
-        proc.cmddown(cmdline.targets, cmdline.allow)
+        status = proc.cmddown(cmdline.targets, cmdline.allow)
     elif cmdline.action == 'shutdown':
-        proc.cmdshutdown()
+        status = proc.cmdshutdown()
     else:
         print("Error: action '" + cmdline.action + "' not implemented.")
         sys.exit(-1)
 
     proc.save()
+    sys.exit(0 if status is True else -1)
 
 except Error as e:
     message(e.message)
+    sys.exit(-1)
 
