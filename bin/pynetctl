@@ -62,17 +62,20 @@ def runparts(path, env={}, reverse=False):
     basename = os.path.basename(path)
     parts = sorted(os.listdir(path), reverse=reverse)
     curdir = os.getcwd()
-    try:
-        os.chdir(path)
-        for i in parts:
-            filename = os.path.join(path, i)
-            st = os.stat(filename)
-            if st.st_mode & stat.S_IFREG and st.st_mode & stat.S_IXUSR:
+    for i in parts:
+        filename = os.path.join(path, i)
+        st = os.stat(filename)
+        if st.st_mode & stat.S_IFREG and st.st_mode & stat.S_IXUSR:
+            try:
+                # Change directory to the location of the script
+                os.chdir(os.path.dirname(os.path.realpath(filename)))
                 status = run(filename, env, os.path.join(basename, i))
-                if status is False:
-                    return False
-    finally:
-        os.chdir(curdir)
+            finally:
+                # Change back
+                os.chdir(curdir)
+
+            if status is False:
+                return False
 
     return True
 
