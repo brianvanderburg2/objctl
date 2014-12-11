@@ -1171,10 +1171,16 @@ class Processor(object):
 
     def cmdshutdown(self):
         """ Shut down all current interfaces. """
-        for name in reversed(self.state.items()):
+        # We put down the interfaces backwards.  We need to check
+        # the last item each time, because if we are putting down
+        # a group, it may put down other interfaces for us.
+        items = self.state.items()
+        while len(items) > 0:
+            name = items[-1]
             status = self.putdown(name)
             if status is False:
                 return False
+            items = self.state.items()
 
         return True
 
