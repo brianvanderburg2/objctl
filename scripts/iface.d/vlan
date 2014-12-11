@@ -1,14 +1,10 @@
 #!/bin/bash
 
-# Bring a VLAN device up and down
-run()
-{
-    [ "$VERBOSE" = "0" ] || echo $@
-    $@
-}
+set -e
+source ../functions.sh 
 
 # Handle only vlans
-[ "$IFACE_TYPE" = "vlan" ] || exit
+[ "$IFACE_TYPE" = "vlan" ] || exit 0
 
 
 if [ "$PHASE" = "pre-up" ] ; then
@@ -28,6 +24,7 @@ if [ "$PHASE" = "pre-up" ] ; then
 
     run ip link add link $DEVICE name $IFACE type vlan id $VLAN
 fi
+
 
 if [ "$PHASE" = "post-down" ] ; then
     run ip link delete dev $IFACE

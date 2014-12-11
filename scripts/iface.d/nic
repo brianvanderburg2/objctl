@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # This nic script does not create/destroy any devices but only brings them
 # up and and down.  It can also assign certain information to the NIC:
@@ -9,11 +9,8 @@
 #   NIC_NETNS       - Set net namespace
 #
 
-run()
-{
-    [ "$VERBOSE" = "0" ] || echo $@
-    $@
-}
+set -e
+source ../functions.sh
 
 # In the 'up' phase, assign certain information
 if [ "$PHASE" = "up" -a -d "/sys/class/net/$IFACE" ] ; then
