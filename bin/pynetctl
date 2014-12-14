@@ -23,9 +23,10 @@ from collections import OrderedDict
 # Globals
 ################################################################################
 
-script_dir = "/etc/pynetwork/scripts"
-state_file = "/etc/pynetwork/run/state"
-config_file = "/etc/pynetwork/interfaces"
+root_dir = "/etc/pynetwork"
+script_dir = "scripts"
+state_file = "run/state"
+config_file = "interfaces"
 cmdline = None
 
 # Utility classes and functions
@@ -395,7 +396,7 @@ class State(object):
         """ Save the state file. """
         dirname = os.path.dirname(self.filename)
         if not os.path.isdir(dirname):
-            os.makedirs(os.path.dirname)
+            os.makedirs(dirname)
         with open(self.filename, 'wt') as handle:
             for i in self.state:
                 handle.write('{0}={1}\n'.format(i, self.state[i]))
@@ -1208,29 +1209,40 @@ class Processor(object):
 # Main program entry
 ################################################################################
 
-# Parse the command line
-parser = argparse.ArgumentParser(description='Simple python network interface control script')
-parser.add_argument('-a', dest='allow', action='store', required=False, help='Allow only interfaces and groups that match to be affected.')
-parser.add_argument('-v', dest='verbose', action='store_true', required=False, default=False, help='Show verbose details.')
-parser.add_argument('-e', dest='dumpenv', action='store_true', required=False, default=False, help='Dump environment variables for each executed command.')
-parser.add_argument('-f', dest='force', action='store_true', required=False, default=False, help='Force interface configuration or deconfiguration.')
-group = parser.add_argument_group('files')
-group.add_argument('-s', dest='state_file', action='store', default=state_file, help='Specify a different state file.')
-group.add_argument('-i', dest='config_file', action='store', default=config_file, help='Specify a different interfaces file.')
-group.add_argument('-d', dest='script_dir', action='store', default=script_dir, help='Specify a different hook script directory.')
+def main():
+    # Globals affected
+    global cmdline
+    global root_dir
+    global script_dir
+    global state_file
+    global config_file
 
-parser.add_argument('action', action='store', choices=['up', 'down', 'shutdown', 'list', 'query'], help='Action to perform with specified interfaces and groups.')
-parser.add_argument('targets', action='store', nargs='*', help='Interfaces and groups to affect')
+    # Parse the command line
+    parser = argparse.ArgumentParser(description='Simple python network interface control script')
+    parser.add_argument('-a', '--allow', dest='allow', action='store', required=False, help='Allow only interfaces and groups that match to be affected.')
+    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', required=False, default=False, help='Show verbose details.')
+    parser.add_argument('-e', '--show-env', dest='dumpenv', action='store_true', required=False, default=False, help='Dump environment variables for each executed command.')
+    parser.add_argument('-f', '--force', dest='force', action='store_true', required=False, default=False, help='Force interface configuration or deconfiguration.')
+    group = parser.add_argument_group('files')
+    group.add_argument('-r', '--root', dest='root_dir', action='store', default=root_dir, help='Specify a root for all configuration-related files.')
+    group.add_argument('-s', '--state', dest='state_file', action='store', default=state_file, help='Specify a different state file.')
+    group.add_argument('-i', '--interfaces', dest='config_file', action='store', default=config_file, help='Specify a different interfaces file.')
+    group.add_argument('-d', '--scripts', dest='script_dir', action='store', default=script_dir, help='Specify a different hook script directory.')
 
-cmdline = parser.parse_args()
+    parser.add_argument('action', action='store', choices=['up', 'down', 'shutdown', 'list', 'query'], help='Action to perform with specified interfaces and groups.')
+    parser.add_argument('targets', action='store', nargs='*', help='Interfaces and groups to affect')
 
-# Update the globals
-script_dir = os.path.abspath(cmdline.script_dir)
-state_file = os.path.abspath(cmdline.state_file)
-config_file = os.path.abspath(cmdline.config_file)
+    cmdline = parser.parse_args()
 
-# Create the processor and execute the actions
-try:
+    # Update the globals
+    if not os.path.isdir(cmdline.root_dir):
+        raise Error('directory {0} does not exist'.format(cmdline.root_dir))
+
+    script_dir = os.path.realpath(os.path.join(cmdline.root_dir, cmdline.script_dir))
+    state_file = os.path.realpath(os.path.join(cmdline.root_dir, cmdline.state_file))
+    config_file = os.path.realpath(os.path.join(cmdline.root_dir, cmdline.config_file))
+
+    # Create the processor and execute the actions
     proc = Processor()
     if cmdline.action == 'up':
         status = proc.cmdup(cmdline.targets, cmdline.allow)
@@ -1239,13 +1251,17 @@ try:
     elif cmdline.action == 'shutdown':
         status = proc.cmdshutdown()
     else:
-        print("Error: action '" + cmdline.action + "' not implemented.")
-        sys.exit(-1)
+        raise Error("action '" + cmdline.action + "' not implemented.")
 
     proc.save()
-    sys.exit(0 if status is True else -1)
+    return status
 
-except Error as e:
-    message(e.message)
-    sys.exit(-1)
 
+# Run it
+if __name__ == '__main__':
+    try:
+        status = main()
+        sys.exit(0 if status is True else -1)
+    except (Error, IOError, OSError) as e:
+        message('{0}: {1}'.format(type(e).__name__, str(e)))
+        sys.exit(-1)
