@@ -995,7 +995,7 @@ class Config(object):
 
     def __init__(self, filename):
         """ Read the configuration file. """
-        self.updowns = {}
+        self.updowns = OrderedDict()
         self.defines = {}
         self.mappings = []
         self.allows = {}
@@ -1083,6 +1083,12 @@ class Processor(object):
 
     def allowed(self, names, allow):
         """ Determine allowed interfaces. """
+        if not allow and not names:
+            # Return false to indicate no items passed
+            # This has a different meaning from retuning an empty list to
+            # incate that the intersection of allow and names was empty
+            return False
+
         # NOTE: When using an allow from the command line, you can not specify
         # a logical interfaces: "-a auto eth0" is okay, but "-a auto etho0=home"
         # is not okay
@@ -1099,6 +1105,8 @@ class Processor(object):
                 message('allow {0} not found'.format(allow))
                 return []
         else:
+            # You can specify logical interfaces when not using an allow
+            # "eth0=home" is okay, as long as not specifying an allow
             return names
 
     def putup(self, name):
@@ -1169,6 +1177,9 @@ class Processor(object):
     def cmdup(self, names, allow):
         """ Bring up interfaces/groups from the command line. """
         names = self.allowed(names, allow)
+        if names is False:
+            raise Error('Nothing to put up')
+
         for i in names:
             status = self.putup(i)
             if status is False:
@@ -1179,6 +1190,9 @@ class Processor(object):
     def cmddown(self, names, allow):
         """ Bring down interfaces/groups from the command line. """
         names = self.allowed(names, allow)
+        if names is False:
+            raise Error('Nothing to bring down')
+
         for i in reversed(names):
             status = self.putdown(i)
             if status is False:
@@ -1199,6 +1213,28 @@ class Processor(object):
                 return False
             items = self.state.items()
 
+        return True
+
+    def cmdlist(self, names, allow):
+        """ List all known stanzas """
+        names = self.allowed(names, allow)
+        if names is False:
+            names = self.config.updowns.keys()
+
+        for i in names:
+            print(i)
+
+        return True
+
+    def cmdquery(self, names, allow):
+        """ Query the current state of interfaecs. """
+        names = self.allowed(names, allow)
+        items = self.state.items()
+        for i in items:
+            if names is False or i in names:
+                logical = self.state.get(i)
+                if not logical is None:
+                    print('{0}={1}'.format(i, logical))
         return True
 
     def save(self):
@@ -1250,6 +1286,10 @@ def main():
         status = proc.cmddown(cmdline.targets, cmdline.allow)
     elif cmdline.action == 'shutdown':
         status = proc.cmdshutdown()
+    elif cmdline.action == 'list':
+        status = proc.cmdlist(cmdline.targets, cmdline.allow)
+    elif cmdline.action == 'query':
+        status = proc.cmdquery(cmdline.targets, cmdline.allow)
     else:
         raise Error("action '" + cmdline.action + "' not implemented.")
 
