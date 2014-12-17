@@ -120,7 +120,7 @@ class ParserLine(object):
     @property
     def words(self):
         if self._words is None:
-            self._words = self._parse();
+            self._words = self._parse()
         return self._words
 
     @property
@@ -290,7 +290,7 @@ class Parser(object):
     def __enter__(self):
         return self
 
-    def __leave__(self, type, value, traceback):
+    def __exit__(self, type, value, traceback):
         self.close()
 
     def __iter__(self):
@@ -299,7 +299,7 @@ class Parser(object):
             yield line
             line = self.readline()
 
-    def close():
+    def close(self):
         for i in self._segments:
             i.close()
         self._segments = []
@@ -419,10 +419,10 @@ class State(object):
 
 class IUpDown(object):
     """ Base class for objects that can be brought up and down. """
-    def putup(self, processor, name, verbose=False):
+    def putup(self, processor, name):
         raise NotImplementedError
 
-    def putdown(self, processor, name, verbose=False):
+    def putdown(self, processor, name):
         raise NotImplementedError
 
 
