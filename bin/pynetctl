@@ -29,6 +29,26 @@ state_file = "run/state"
 config_file = "interfaces"
 cmdline = None
 
+# Some constants make errors easier to detect
+IFACE_PREUP_DIR = 'iface-pre-up.d'
+IFACE_UP_DIR = 'iface-up.d'
+IFACE_POSTUP_DIR = 'iface-post-up.d'
+IFACE_PREDOWN_DIR = 'iface-pre-down.d'
+IFACE_DOWN_DIR = 'iface-down.d'
+IFACE_POSTDOWN_DIR = 'iface-post-down.d'
+
+PROTO_PREUP_DIR = 'proto-pre-up.d'
+PROTO_UP_DIR = 'proto-up.d'
+PROTO_POSTUP_DIR = 'proto-post-up.d'
+PROTO_PREDOWN_DIR = 'proto-pre-down.d'
+PROTO_DOWN_DIR = 'proto-down.d'
+PROTO_POSTDOWN_DIR = 'proto-post-down.d'
+
+PRESTART_DIR = 'pre-start.d'
+POSTSTART_DIR = 'post-start.d'
+PRESTOP_DIR = 'pre-stop.d'
+POSTSTOP_DIR = 'post-stop.d'
+
 # Utility classes and functions
 ################################################################################
 
@@ -60,6 +80,12 @@ def run(command, env={}, show=None):
 
 def runparts(path, env={}, reverse=False):
     """ Run all files in a directory with an environment. """
+    # Combine path with script directory
+    if isinstance(path, (tuple, list)):
+        path = os.path.join(script_dir, *path)
+    else:
+        path = os.path.join(script_dir, path)
+
     basename = os.path.basename(path)
     parts = sorted(os.listdir(path), reverse=reverse)
     curdir = os.getcwd()
@@ -79,13 +105,6 @@ def runparts(path, env={}, reverse=False):
                 return False
 
     return True
-
-def runscripts(path, env={}, reverse=False):
-    """ Run the parts from the script path. """
-    if not isinstance(path, (tuple, list)):
-        path = [path]
-
-    return runparts(os.path.join(script_dir, *path), env, reverse)
 
 def stdenv(inenv=None):
     """ Return a default standard environment. """
@@ -582,22 +601,8 @@ class Iface(IUpDown):
 
     def putup(self, processor, iface):
         """ Bring an object up. """
-        env = {'IFACE': iface,
-               'LOGICAL': self.name,
-               'MODE': 'start',
-               'PHASE': '',
-               'PATH': os.environ['PATH'],
-               'VERBOSE': '1' if cmdline.verbose else '0'}
-
         message('configuring interface {0}={1}'.format(iface, self.name))
-
-        # Determine directories
-        iface_preup_dir = os.path.join(script_dir, 'iface-pre-up.d')
-        iface_up_dir = os.path.join(script_dir, 'iface-up.d')
-        iface_postup_dir = os.path.join(script_dir, 'iface-post-up.d')
-        proto_preup_dir = os.path.join(script_dir, 'proto-pre-up.d')
-        proto_up_dir = os.path.join(script_dir, 'proto-up.d')
-        proto_postup_dir = os.path.join(script_dir, 'proto-post-up.d')
+        env = stdenv({'IFACE': iface, 'LOGICAL': self.name, 'MODE': 'start'})
 
         # pre-up
         if cmdline.verbose:
@@ -606,12 +611,12 @@ class Iface(IUpDown):
         env['PHASE'] = 'pre-up'
 
         if self.iface_env:
-            status = runparts(iface_preup_dir, mergedict(env, self.iface_env))
+            status = runparts(IFACE_PREUP_DIR, mergedict(env, self.iface_env))
             if status is False:
                 return False
         
         for i in self.proto_types_env:
-            status = runparts(proto_preup_dir, mergedict(env, i))
+            status = runparts(PROTO_PREUP_DIR, mergedict(env, i))
             if status is False:
                 return False
 
@@ -627,12 +632,12 @@ class Iface(IUpDown):
         env['PHASE'] = 'up'
 
         if self.iface_env:
-            status = runparts(iface_up_dir, mergedict(env, self.iface_env))
+            status = runparts(IFACE_UP_DIR, mergedict(env, self.iface_env))
             if status is False:
                 return False
 
         for i in self.protos_env:
-            status = runparts(proto_up_dir, mergedict(env, i))
+            status = runparts(PROTO_UP_DIR, mergedict(env, i))
             if status is False:
                 return False
 
@@ -648,12 +653,12 @@ class Iface(IUpDown):
         env['PHASE'] = 'post-up'
         
         if self.iface_env:
-            status = runparts(iface_postup_dir, mergedict(env, self.iface_env))
+            status = runparts(IFACE_POSTUP_DIR, mergedict(env, self.iface_env))
             if status is False:
                 return False
         
         for i in self.proto_types_env:
-            status = runparts(proto_postup_dir, mergedict(env, i))
+            status = runparts(PROTO_POSTUP_DIR, mergedict(env, i))
             if status is False:
                 return False
 
@@ -666,23 +671,9 @@ class Iface(IUpDown):
     
     def putdown(self, processor, iface):
         """ Bring an interface down. """
-        env = {'IFACE': iface,
-               'LOGICAL': self.name,
-               'MODE': 'stop',
-               'PHASE': '',
-               'PATH': os.environ['PATH'],
-               'VERBOSE': '1' if cmdline.verbose else '0'}
-
         message('deconfiguring interface {0}={1}'.format(iface, self.name))
+        env = stdenv({'IFACE': iface, 'LOGICAL': self.name, 'MODE': 'stop'})
         
-        # Determine directories
-        iface_predown_dir = os.path.join(script_dir, 'iface-pre-down.d')
-        iface_down_dir = os.path.join(script_dir, 'iface-down.d')
-        iface_postdown_dir = os.path.join(script_dir, 'iface-post-down.d')
-        proto_predown_dir = os.path.join(script_dir, 'proto-pre-down.d')
-        proto_down_dir = os.path.join(script_dir, 'proto-down.d')
-        proto_postdown_dir = os.path.join(script_dir, 'proto-post-down.d')
-
         # pre-down
         if cmdline.verbose:
             message('interface pre-down')
@@ -695,12 +686,12 @@ class Iface(IUpDown):
                 return False
         
         for i in reversed(self.proto_types_env):
-            status = runparts(proto_predown_dir, mergedict(env, i), True)
+            status = runparts(PROTO_PREDOWN_DIR, mergedict(env, i), True)
             if status is False:
                 return False
 
         if self.iface_env:
-            status = runparts(iface_predown_dir, mergedict(env, self.iface_env), True)
+            status = runparts(IFACE_PREDOWN_DIR, mergedict(env, self.iface_env), True)
             if status is False:
                 return False
 
@@ -716,12 +707,12 @@ class Iface(IUpDown):
                 return False
         
         for i in reversed(self.protos_env):
-            status = runparts(proto_down_dir, mergedict(env, i), True)
+            status = runparts(PROTO_DOWN_DIR, mergedict(env, i), True)
             if status is False:
                 return False
 
         if self.iface_env:
-            status = runparts(iface_down_dir, mergedict(env, self.iface_env), True)
+            status = runparts(IFACE_DOWN_DIR, mergedict(env, self.iface_env), True)
             if status is False:
                 return False
 
@@ -737,12 +728,12 @@ class Iface(IUpDown):
                 return False
         
         for i in reversed(self.proto_types_env):
-            status = runparts(proto_postdown_dir, mergedict(env, i), True)
+            status = runparts(PROTO_POSTDOWN_DIR, mergedict(env, i), True)
             if status is False:
                 return False
 
         if self.iface_env:
-            status = runparts(iface_postdown_dir, mergedict(env, self.iface_env), True)
+            status = runparts(IFACE_POSTDOWN_DIR, mergedict(env, self.iface_env), True)
             if status is False:
                 return False
 
@@ -799,14 +790,8 @@ class Group(IUpDown):
 
     def putup(self, processor, group):
         """ Bring a group up. """
-        env = {'GROUP': group,
-               'LOGICAL': self.name,
-               'MODE': 'start',
-               'PHASE': '',
-               'PATH': os.environ['PATH'],
-               'VERBOSE': '1' if cmdline.verbose else '0'}
-
         message('configuring group {0}={1}'.format(group, self.name))
+        env = stdenv({'GROUP': group, 'LOGICAL': self.name, 'MODE': 'start'})
 
         # pre-up
         if cmdline.verbose:
@@ -838,14 +823,8 @@ class Group(IUpDown):
     
     def putdown(self, processor, group):
         """ Bring an group down. """
-        env = {'GROUP': group,
-               'LOGICAL': self.name,
-               'MODE': 'stop',
-               'PHASE': '',
-               'PATH': os.environ['PATH'],
-               'VERBOSE': '1' if cmdline.verbose else '0'}
-
         message('deconfiguring group {0}={1}'.format(group, self.name))
+        env = stdenv({'GROUP': group, 'LOGICAL': self.name, 'MODE': 'stop'})
 
         # pre-down
         if cmdline.verbose:
@@ -1205,7 +1184,7 @@ class Processor(object):
 
         # pre-start
         env['PHASE'] = 'pre-start'
-        status = runscripts('pre-start.d', env)
+        status = runparts(PRESTART_DIR, env)
         if status is False:
             return False
 
@@ -1217,7 +1196,7 @@ class Processor(object):
 
         # post-start
         env['PHASE'] = 'post-start'
-        status = runscripts('post-start.d', env)
+        status = runparts(POSTSTART_DIR, env)
         if status is False:
             return False
 
@@ -1233,7 +1212,7 @@ class Processor(object):
 
         # pre-stop
         env['PHASE'] = 'pre-stop'
-        status = runscripts('pre-stop.d', env, True)
+        status = runparts(PRESTOP_DIR, env, True)
         if status is False:
             return False
 
@@ -1245,7 +1224,7 @@ class Processor(object):
 
         # post-stop
         env['PHASE'] = 'post-stop'
-        status = runscripts('post-stop.d', env, True)
+        status = runparts(POSTSTOP_DIR, env, True)
         if status is False:
             return False
 
@@ -1261,7 +1240,7 @@ class Processor(object):
 
         # pre-stop
         env['PHASE'] = 'pre-stop'
-        status = runscripts('pre-stop.d', env, True)
+        status = runparts(PRESTOP_DIR, env, True)
         if status is False:
             return False
 
@@ -1276,7 +1255,7 @@ class Processor(object):
 
         # post-stop
         env['PHASE'] = 'post-stop'
-        status = runscripts('post-stop.d', env, True)
+        status = runparts(POSTSTOP_DIR, env, True)
         if status is False:
             return False
 
