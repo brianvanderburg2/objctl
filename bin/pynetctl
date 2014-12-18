@@ -80,6 +80,27 @@ def runparts(path, env={}, reverse=False):
 
     return True
 
+def runscripts(path, env={}, reverse=False):
+    """ Run the parts from the script path. """
+    if not isinstance(path, (tuple, list)):
+        path = [path]
+
+    return runparts(os.path.join(script_dir, *path), env, reverse)
+
+def stdenv(inenv=None):
+    """ Return a default standard environment. """
+    env = {
+        'MODE': '',
+        'PHASE': '',
+        'PATH': os.environ['PATH'],
+        'VERBOSE': '1' if cmdline.verbose else '0'
+    }
+
+    if not inenv is None:
+        env.update(inenv)
+
+    return env
+
 def makeenv(name, value):
     """ Make an environment variable from a configuration name. """
     name = name.replace('-', '_').upper()
@@ -1180,10 +1201,25 @@ class Processor(object):
         if names is False:
             raise Error('Nothing to put up')
 
+        env = stdenv({'MODE': 'start'})
+
+        # pre-start
+        env['PHASE'] = 'pre-start'
+        status = runscripts('pre-start.d', env)
+        if status is False:
+            return False
+
+        # start
         for i in names:
             status = self.putup(i)
             if status is False:
                 return False
+
+        # post-start
+        env['PHASE'] = 'post-start'
+        status = runscripts('post-start.d', env)
+        if status is False:
+            return False
 
         return True
     
@@ -1193,10 +1229,25 @@ class Processor(object):
         if names is False:
             raise Error('Nothing to bring down')
 
+        env = stdenv({'MODE': 'stop'})
+
+        # pre-stop
+        env['PHASE'] = 'pre-stop'
+        status = runscripts('pre-stop.d', env, True)
+        if status is False:
+            return False
+
+        # stop
         for i in reversed(names):
             status = self.putdown(i)
             if status is False:
                 return False
+
+        # post-stop
+        env['PHASE'] = 'post-stop'
+        status = runscripts('post-stop.d', env, True)
+        if status is False:
+            return False
 
         return True
 
@@ -1205,6 +1256,16 @@ class Processor(object):
         # We put down the interfaces backwards.  We need to check
         # the last item each time, because if we are putting down
         # a group, it may put down other interfaces for us.
+
+        env = stdenv({'MODE': 'stop'})
+
+        # pre-stop
+        env['PHASE'] = 'pre-stop'
+        status = runscripts('pre-stop.d', env, True)
+        if status is False:
+            return False
+
+        # stop
         items = self.state.items()
         while len(items) > 0:
             name = items[-1]
@@ -1212,6 +1273,12 @@ class Processor(object):
             if status is False:
                 return False
             items = self.state.items()
+
+        # post-stop
+        env['PHASE'] = 'post-stop'
+        status = runscripts('post-stop.d', env, True)
+        if status is False:
+            return False
 
         return True
 
