@@ -1,0 +1,19 @@
+#!/bin/bash
+
+set -e
+source ../../functions.sh
+
+# Handle only bridges
+[ "$OBJECT_TYPE" = "bridge" ] || exit 0
+
+
+if [ "$PHASE" = "pre-up" ] ; then
+    run ip link add name $OBJECT type bridge
+fi
+
+
+if [ "$PHASE" = "post-down" ] ; then
+    run ip link delete dev $OBJECT
+fi
+
+

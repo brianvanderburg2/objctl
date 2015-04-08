@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# This nic script does not create/destroy any devices but only brings them
+# up and and down.  It can also assign certain information to the NIC:
+#
+#   NIC_HWADDR      - Set the hardware address
+#   NIC_MTU         - Set the mtu
+#   NIC_PROMISC     - Enable or disable promisc mode
+#   NIC_NETNS       - Set net namespace
+#
+
+set -e
+source ../../functions.sh
+
+# In the 'up' phase, assign certain information
+if [ "$PHASE" = "up" -a -d "/sys/class/net/$OBJECT" ] ; then
+
+    # hwaddr
+    if [ x"$OBJECT_NIC_HWADDR" != x"" ] ; then
+        run ip link set dev $OBJECT address $OBJECT_NIC_HWADDR
+    fi
+
+    # mtu
+    if [ x"$OBJECT_NIC_MTU" != x"" ] ; then
+        run ip link set dev $OBJECT mtu $OBJECT_NIC_MTU
+    fi
+
+    # promisc
+    if [ x"$OBJECT_NIC_PROMISC" = x"on" ] ; then
+        run ip link set dev $OBJECT promisc on
+    else
+        run ip link set dev $OBJECT promisc off
+    fi
+
+    # netns
+    if [ x"$OBJECT_NIC_NETNS" != x"" ] ; then
+        run ip link set dev $OBJECT netns $OBJECT_NIC_NETNS
+    fi
+    
+    # Bring up the interface
+    run ip link set dev $OBJECT up
+fi
+
+# In the down phase, take down the interface
+if [ "$PHASE" = "down" -a -d "/sys/class/net/$OBJECT" ] ; then
+    run ip link set dev $OBJECT down
+fi
+

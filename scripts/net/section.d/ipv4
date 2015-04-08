@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -e
+source ../../functions.sh
+
+[ "$SECTION_PARAM1" = "ipv4" ] || exit
+
+if [ "$PHASE" = "up" ] ; then
+    if [ "$SECTION_PARAM2" = "static" ] ; then
+        run ip addr add $SECTION_ADDRESS dev $OBJECT
+    fi
+fi
+

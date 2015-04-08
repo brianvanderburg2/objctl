@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -e
+source ../../functions.sh
+
+if [ "$PHASE" = "up" -a -d "/sys/class/net/$OBJECT" ] ; then
+    run ip addr flush dev $OBJECT
+fi
+

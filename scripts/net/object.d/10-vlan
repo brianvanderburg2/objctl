@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -e
+source ../../functions.sh 
+
+# Handle only vlans
+[ "$OBJECT_TYPE" = "vlan" ] || exit 0
+
+
+if [ "$PHASE" = "pre-up" ] ; then
+    # Determine the vlan device
+    if [ x"$OBJECT_VLAN_DEVICE" != x"" ] ; then
+        DEVICE=$OBJECT_VLAN_DEVICE
+    else
+        DEVICE=${OBJECT%.*}
+    fi
+
+    # Determine the vlan number
+    if [ x"$OBJECT_VLAN_ID" != x"" ] ; then
+        VLAN=$OBJECT_VLAN_ID
+    else
+        VLAN=${OBJECT##*.}
+    fi
+
+    run ip link add link $DEVICE name $OBJECT type vlan id $VLAN
+fi
+
+
+if [ "$PHASE" = "post-down" ] ; then
+    run ip link delete dev $OBJECT
+fi
+
