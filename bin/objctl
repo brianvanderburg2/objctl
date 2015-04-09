@@ -590,6 +590,11 @@ class Object(IUpDown):
         message('configuring object {0}={1}'.format(obj, self.name))
         env = stdenv({'OBJECT': obj, 'LOGICAL': self.name, 'MODE': 'start'})
 
+        # handle per-type up notifications
+        if self.type:
+            if not processor.prenotify(self.type, 'start'):
+                return FALSE
+
         # pre-up
         if cmdline.verbose:
             message('object pre-up')
@@ -660,6 +665,10 @@ class Object(IUpDown):
         message('deconfiguring object {0}={1}'.format(obj, self.name))
         env = stdenv({'OBJECT': obj, 'LOGICAL': self.name, 'MODE': 'stop'})
         
+        # handle per-type up notifications
+        if self.type:
+            processor.prenotify(self.type, 'stop')
+
         # pre-down
         if cmdline.verbose:
             message('object pre-down')
@@ -1053,6 +1062,7 @@ class Processor(object):
         """ Load the current config and state. """
         self.config = Config(config_file)
         self.state = State(state_file)
+        self.types = []
 
     def find(self, name, mappings=True):
         """ Apply mappings if needed to find the name and logical. """
@@ -1095,6 +1105,32 @@ class Processor(object):
             # "eth0=home" is okay, as long as not specifying an allow
             return names
 
+    def prenotify(self, type, mode):
+        """ Send a notification if needed. """
+        if not type in self.types:
+            self.types.append(type)
+
+            if cmdline.verbose:
+                message('pre-' + mode + ': ' + type)
+
+            env = stdenv({'MODE': mode, 'PHASE': 'pre-' + mode})
+            return runparts(type, NOTIFY_DIR, env)
+        else:
+            return True
+
+    def postnotify(self, mode):
+        """ Send all needed post notifications. """
+        status = True
+        env = stdenv({'MODE': mode, 'PHASE': 'post-' + mode})
+
+        for type in self.types:
+            if cmdline.verbose:
+                message('post-' + mode + ': ' + type)
+
+            status = runparts(type, NOTIFY_DIR, env) and status
+
+        return status
+
     def putup(self, name):
         """ Bring up an object/group """
         (name, logical) = self.find(name)
@@ -1105,6 +1141,8 @@ class Processor(object):
             message('object/group {0} already configured as {1}'.format(name, current))
             if cmdline.force:
                 message('configuration forced')
+            elif current == logical:
+                return True
             else:
                 return False
         
@@ -1176,24 +1214,30 @@ class Processor(object):
 
         # pre-start
         env['PHASE'] = 'pre-start'
+        if cmdline.verbose:
+            message('pre-start')
+
         status = runparts(None, NOTIFY_DIR, env)
-        if status is False:
-            return False
 
         # start
-        for i in names:
-            status = self.putup(i)
-            if status is False:
-                return False
+        if status:
+            for i in names:
+                status = self.putup(i) and status
+                if status is False:
+                    break
+
+        env['PHASE'] = 'post-start'
+
+        # per-type post-start
+        status = self.postnotify('start') and status
 
         # post-start
-        env['PHASE'] = 'post-start'
-        status = runparts(None, NOTIFY_DIR, env)
-        if status is False:
-            return False
-
-        return True
+        if cmdline.verbose:
+            message('post-start')
+        status = runparts(None, NOTIFY_DIR, env) and status
     
+        return status
+
     def cmddown(self, names, allow):
         """ Bring down objects/groups from the command line. """
         names = self.allowed(names, allow)
@@ -1204,23 +1248,29 @@ class Processor(object):
 
         # pre-stop
         env['PHASE'] = 'pre-stop'
+        if cmdline.verbose:
+            message('pre-stop')
+
         status = runparts(None, NOTIFY_DIR, env, True)
-        if status is False:
-            return False
 
         # stop
-        for i in reversed(names):
-            status = self.putdown(i)
-            if status is False:
-                return False
+        if status:
+            for i in reversed(names):
+                status = self.putdown(i) and status
+                if status is False:
+                    break
+
+        env['PHASE'] = 'post-stop'
+
+        # per-type post-stop
+        status = self.postnotify('stop') and status
 
         # post-stop
-        env['PHASE'] = 'post-stop'
-        status = runparts(None, NOTIFY_DIR, env, True)
-        if status is False:
-            return False
+        if cmdline.verbose:
+            message('post-stop')
+        status = runparts(None, NOTIFY_DIR, env, True) and status
 
-        return True
+        return status
 
     def cmdshutdown(self):
         """ Shut down all current objects. """
@@ -1232,26 +1282,31 @@ class Processor(object):
 
         # pre-stop
         env['PHASE'] = 'pre-stop'
+        if cmdline.verbose:
+            message('pre-stop')
         status = runparts(None, NOTIFY_DIR, env, True)
-        if status is False:
-            return False
 
         # stop
-        items = self.state.items()
-        while len(items) > 0:
-            name = items[-1]
-            status = self.putdown(name)
-            if status is False:
-                return False
+        if status:
             items = self.state.items()
+            while len(items) > 0:
+                name = items[-1]
+                status = self.putdown(name) and status
+                if status is False:
+                    break
+                items = self.state.items()
+
+        env['PHASE'] = 'post-stop'
+
+        # per-type post-stop
+        status = self.postnotify('stop') and status
 
         # post-stop
-        env['PHASE'] = 'post-stop'
-        status = runparts(None, NOTIFY_DIR, env, True)
-        if status is False:
-            return False
+        if cmdline.verbose:
+            message('post-stop')
+        status = runparts(None, NOTIFY_DIR, env, True) and status
 
-        return True
+        return status
 
     def cmdlist(self, names, allow):
         """ List all known stanzas """
@@ -1292,7 +1347,7 @@ def main():
     global config_file
 
     # Parse the command line
-    parser = argparse.ArgumentParser(description='Simple python network interface control script')
+    parser = argparse.ArgumentParser(description='Simple python network object control script')
     parser.add_argument('-a', '--allow', dest='allow', action='store', required=False, help='Allow only objects and groups that match to be affected.')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', required=False, default=False, help='Show verbose details.')
     parser.add_argument('-e', '--show-env', dest='dumpenv', action='store_true', required=False, default=False, help='Dump environment variables for each executed command.')
